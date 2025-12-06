@@ -1,0 +1,35 @@
+#ignore all files
+*
+!*/
+
+.vscode/
+vendor/
+target/
+tags
+
+#except the following files
+!.gitignore
+!.clang-format
+
+# C/C++ source files
+!*.cpp
+!*.hpp
+!*.c
+!*.h
+!*.inl
+
+# Documentation and image files
+!*.md
+!*.png
+!*.svg
+!*.pdf
+
+# Configuration and script files
+!*.go
+!*.json
+
+# Batch and ini files
+!*.ini
+!*.bat
+
+#except the following folders

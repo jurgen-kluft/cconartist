@@ -1,0 +1,31 @@
+{
+    "decoders": {
+        "folder": "plugins"
+    },
+    "servers": [
+        {
+            "name": "GeekOpen TCP Server",
+            "type": "tcp",
+            "port": 31330,
+            "decoders": [
+                "geekopen"
+            ]
+        },
+        {
+            "name": "Sensors UDP Server",
+            "type": "udp",
+            "port": 31370,
+            "decoders": [
+                "sensorpacket"
+            ]
+        },
+        {
+            "name": "Sensors TCP Server",
+            "type": "tcp",
+            "port": 31372,
+            "decoders": [
+                "sensorpacket"
+            ]
+        }
+    ]
+}

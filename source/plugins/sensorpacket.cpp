@@ -1,0 +1,128 @@
+#include "../cpp/units.cpp"
+#include "../cpp/sensor_types.cpp"
+
+#include <string>
+
+#include "decoder_interface.h"
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+    struct sensor_packet_t
+    {
+        unsigned char m_length;   // packet length = length * 2
+        unsigned char m_version;  // packet version
+        unsigned char m_mac[6];   // device MAC address
+    };
+
+    struct sensor_value_t
+    {
+        unsigned char m_type;  // sensor type
+        unsigned char m_l;     // sensor value low
+        unsigned char m_h;     // sensor value high
+    };
+
+    ui_element_t* decode_ui_element(const unsigned char* packet_data, ui_builder_t* ui_builder)
+    {
+        sensor_packet_t const* packet     = (sensor_packet_t const*)packet_data;
+        const int              length     = packet->m_length * 2;
+        const int              num_values = (length - sizeof(sensor_packet_t)) / sizeof(sensor_value_t);
+
+        // Create UI element for this received sensor packet
+        ui_element_t* ui_element = ui_builder->heap_allocate<ui_element_t>();
+        ui_element->m_count      = num_values + 3;  // +3 for Length, Version and MAC address
+        ui_item_t* ui_items      = ui_builder->heap_allocate_array<ui_item_t>(ui_element->m_count);
+        ui_element->m_items      = ui_items;
+
+        int item_index = 0;
+
+        // First UI item is the packet length
+        ui_text_item_t* text_item_0 = (ui_text_item_t*)&ui_element->m_items[item_index++];
+        text_item_0->m_type         = UIItemText;
+        text_item_0->m_key          = ui_builder->string_allocate("Packet Length", 13);
+        text_item_0->m_key_len      = strlen(text_item_0->m_key);
+        char* length_string         = ui_builder->string_allocate("", 12);
+        int   value_len             = snprintf(length_string, 12, "%d bytes", length);
+        text_item_0->m_value        = length_string;
+        text_item_0->m_value_len    = value_len;
+
+        // Second UI item is the packet version
+        ui_text_item_t* text_item_1 = (ui_text_item_t*)&ui_element->m_items[item_index++];
+        text_item_1->m_type         = UIItemText;
+        text_item_1->m_key          = ui_builder->string_allocate("Packet Version", 14);
+        text_item_1->m_key_len      = strlen(text_item_1->m_key);
+        char* version_string        = (ui_builder->string_allocate("", 5));
+        int   version_value_len     = snprintf(version_string, 5, "%d", packet->m_version);
+        text_item_1->m_value        = version_string;
+        text_item_1->m_value_len    = version_value_len;
+
+        // Third UI item is the MAC address
+        ui_text_item_t* text_item_2        = (ui_text_item_t*)&ui_element->m_items[item_index++];
+        text_item_2->m_type                = UIItemText;
+        text_item_2->m_key                 = ui_builder->string_allocate("Device MAC Address", 18);
+        text_item_2->m_key_len             = strlen(text_item_2->m_key);
+        char*                mac_string    = (ui_builder->string_allocate("", 18));  // XX:XX:XX:XX:XX:XX = 17 chars + null
+        const unsigned char* mac           = (const unsigned char*)packet->m_mac;
+        int                  mac_value_len = snprintf(mac_string, 18, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        text_item_2->m_value               = mac_string;
+        text_item_2->m_value_len           = mac_value_len;
+
+        sensor_value_t const* value = (sensor_value_t const*)(packet_data + sizeof(sensor_packet_t));
+        for (int i = 0; i < num_values; ++i)
+        {
+            short sensor_scalar = 1;
+            short sensor_unit   = 0;  // EUnit
+            int   sensor_value  = ((int)value->m_h << 8) | (int)value->m_l;
+
+            // Process sensor value based on its type to determine scalar
+            switch (value->m_type)
+            {
+                // Add more sensor types as needed
+                default:
+                    // Unknown sensor type
+                    break;
+            }
+
+            sensor_unit             = get_unit((ESensorType)value->m_type);
+            const char* unit_string = to_string((EUnit)sensor_unit);
+
+            // Initialization of a UI item for this sensor value
+            char temporary_string[64];
+            int  value_len = 0;
+            if (sensor_scalar != 1)
+            {
+                float value_scaled = (float)sensor_value / (float)sensor_scalar;
+                value_len          = snprintf(temporary_string, sizeof(temporary_string), "%.3f %s", value_scaled, unit_string);
+            }
+            else
+            {
+                value_len = snprintf(temporary_string, sizeof(temporary_string), "%d %s", sensor_value, unit_string);
+            }
+            char* value_string = ui_builder->string_allocate("", value_len);
+            strncpy(value_string, temporary_string, value_len + 1);
+
+            ui_text_item_t* text_item = (ui_text_item_t*)&ui_element->m_items[item_index++];
+            text_item->m_type         = UIItemText;
+            text_item->m_value        = value_string;
+            text_item->m_value_len    = value_len;
+            text_item->m_key          = to_string((ESensorType)value->m_type);
+            text_item->m_key_len      = strlen(text_item->m_key);
+
+            ++value;
+        }
+        return ui_element;
+    }
+
+    void* write_to_stream(connection_context_t* ctx, const unsigned char* packet_data, unsigned int packet_size)
+    {
+        // Simply write the raw packet data to the stream
+        void* stream_data_ptr = ctx->m_connection_interface->stream_allocate(packet_size);
+        memcpy(stream_data_ptr, packet_data, packet_size);
+        return stream_data_ptr;
+    }
+
+#ifdef __cplusplus
+}
+#endif
