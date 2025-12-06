@@ -3,11 +3,10 @@ package cconartist
 import (
 	"github.com/jurgen-kluft/ccode/denv"
 	ccore "github.com/jurgen-kluft/ccore/package"
-	cimgui "github.com/jurgen-kluft/cimgui/package"
+	cguiapp "github.com/jurgen-kluft/cguiapp/package"
 	cjson "github.com/jurgen-kluft/cjson/package"
 	clibuv "github.com/jurgen-kluft/clibuv/package"
 	cmmio "github.com/jurgen-kluft/cmmio/package"
-	craylib "github.com/jurgen-kluft/craylib/package"
 	cunittest "github.com/jurgen-kluft/cunittest/package"
 )
 
@@ -23,8 +22,7 @@ func GetPackage() *denv.Package {
 	ccorepkg := ccore.GetPackage()
 	clibuvpkg := clibuv.GetPackage()
 	cmmiopkg := cmmio.GetPackage()
-	cimguipkg := cimgui.GetPackage()
-	craylibpkg := craylib.GetPackage()
+	cguiapppkg := cguiapp.GetPackage()
 	cjsonpkg := cjson.GetPackage()
 	cunittestpkg := cunittest.GetPackage()
 
@@ -33,13 +31,15 @@ func GetPackage() *denv.Package {
 	mainpkg.AddPackage(ccorepkg)
 	mainpkg.AddPackage(clibuvpkg)
 	mainpkg.AddPackage(cmmiopkg)
-	mainpkg.AddPackage(cimguipkg)
-	mainpkg.AddPackage(craylibpkg)
+	mainpkg.AddPackage(cguiapppkg)
 	mainpkg.AddPackage(cjsonpkg)
 	mainpkg.AddPackage(cunittestpkg)
 
 	// main library
 	mainlib := denv.SetupCppLibProject(mainpkg, name)
+	mainlib.AddDependencies(ccorepkg.GetMainLib())
+	mainlib.AddDependencies(clibuvpkg.GetMainLib())
+	mainlib.AddDependencies(cmmiopkg.GetMainLib())
 
 	// test library
 	testlib := denv.SetupCppTestLibProject(mainpkg, name)
@@ -47,11 +47,10 @@ func GetPackage() *denv.Package {
 	testlib.AddDependencies(cunittestpkg.GetTestLib())
 
 	// main application
-	cconartist := denv.SetupCppAppProjectForDesktop(mainpkg, "cconartist", "main")
-	cconartist.AddDependencies(ccorepkg.GetMainLib())
-	cconartist.AddDependencies(clibuvpkg.GetMainLib())
-	cconartist.AddDependencies(cmmiopkg.GetMainLib())
+	cconartist := denv.SetupCppAppProjectForDesktop(mainpkg, "cconartist", "capp")
 	cconartist.AddDependency(mainlib)
+	cconartist.AddDependencies(cjsonpkg.GetMainLib())
+	cconartist.AddDependencies(cguiapppkg.GetMainLib())
 
 	// unittest project
 	maintest := denv.SetupCppTestProject(mainpkg, name)
