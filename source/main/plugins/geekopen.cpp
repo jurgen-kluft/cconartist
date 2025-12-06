@@ -147,7 +147,7 @@ extern "C"
     void* write_to_stream(connection_context_t* ctx, const unsigned char* stream_data, unsigned int packet_size)
     {
         // For GeekOpen we write the raw JSON data as is to the stream that is coupled with the GeekOpen TCP server.
-        void* stream_data_ptr = ctx->m_connection_interface->stream_allocate(sizeof(stream_json_t) + packet_size);
+        unsigned char* stream_data_ptr = ctx->m_connection_interface->stream_allocate(sizeof(stream_json_t) + packet_size);
         if (stream_data_ptr == nullptr)
             return nullptr;
         stream_json_t* json_data = (stream_json_t*)stream_data_ptr;

@@ -44,10 +44,13 @@ func GetPackage() *denv.Package {
 	// test library
 	testlib := denv.SetupCppTestLibProject(mainpkg, name)
 	testlib.AddDependencies(ccorepkg.GetTestLib())
+	testlib.AddDependencies(clibuvpkg.GetTestLib())
+	testlib.AddDependencies(cmmiopkg.GetTestLib())
 	testlib.AddDependencies(cunittestpkg.GetTestLib())
 
 	// main application
 	cconartist := denv.SetupCppAppProjectForDesktop(mainpkg, "cconartist", "capp")
+	cconartist.CopyToOutput("source/main/plugins", "*.dylib", "plugins")
 	cconartist.AddDependency(mainlib)
 	cconartist.AddDependencies(cjsonpkg.GetMainLib())
 	cconartist.AddDependencies(cguiapppkg.GetMainLib())

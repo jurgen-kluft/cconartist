@@ -1,7 +1,7 @@
 #ifndef __CCONARTIST_DECODER_SENSOR_TYPE_H__
 #define __CCONARTIST_DECODER_SENSOR_TYPE_H__
 
-#include "units.h"
+#include "cconartist/units.h"
 
 enum ESensorType
 {
