@@ -5,15 +5,28 @@
 
 namespace ncore
 {
+#define STREAM_PAGE_MAX_ITEMS (8192 - 5)
     // Each stream page is exactly 64KB in size
     struct stream_page_t
     {
-        u64 m_time_begin;       // Timestamp begin of this page
-        u64 m_time_end;         // Timestamp end of this page
-        i64 m_previous;         // Offset to previous page (0 = none)
-        i64 m_next;             // Ofset to next page (0 = none)
-        i64 m_item_count;       // Number of items currently in this page
-        i64 m_items[8192 - 5];  // Offsets to items in the mmapped file
+        u64 m_time_begin;                    // Timestamp begin of this page
+        u64 m_time_end;                      // Timestamp end of this page
+        i64 m_prev_page;                     // Base+Offset to previous page (0 = none)
+        i64 m_next_page;                     // Base+Ofset to next page (0 = none)
+        i32 m_item_count;                    // Number of items currently in this page
+        i32 m_size;                          // Size of this page in bytes
+        i64 m_items[STREAM_PAGE_MAX_ITEMS];  // Offsets to items in the mmapped file
+    };
+
+    // Stream Item Layout
+    struct stream_item_header_t
+    {
+        u32 m_time_high;
+        u32 m_time_low;
+        u32 m_id_high;
+        u32 m_id_low;
+        u32 m_size;
+        // followed by data...
     };
 
     struct stream_context_t;
@@ -34,18 +47,19 @@ namespace ncore
         int                  m_num_active_iterators;
     };
 
-    void stream_page_initialize(stream_page_t* page, stream_page_t* previous_page)
+    void stream_page_initialize(u8 const* base, stream_page_t* page, stream_page_t* previous_page)
     {
         page->m_time_begin = 0;
         page->m_time_end   = 0;
-        page->m_previous   = 0;
-        page->m_next       = 0;
+        page->m_prev_page  = 0;
+        page->m_next_page  = 0;
         page->m_item_count = 0;
+        page->m_size       = 0;
         nmem::memset(page->m_items, 0, sizeof(page->m_items));
         if (previous_page)
         {
-            page->m_previous      = ((u8*)previous_page - (u8*)page);
-            previous_page->m_next = (u8*)page - (u8*)previous_page;
+            page->m_prev_page          = (u8*)previous_page - base;
+            previous_page->m_next_page = (u8*)page - base;
         }
     }
 
@@ -53,18 +67,18 @@ namespace ncore
 
     stream_page_t* stream_get_previous_page(stream_context_t* ctx, stream_page_t* current_page)
     {
-        if (current_page->m_previous == 0)
+        if (current_page->m_prev_page == 0)
             return nullptr;
         u8* base_addr = (u8*)nmmio::address_rw(ctx->m_mmstream);
-        return (stream_page_t*)(base_addr + current_page->m_previous);
+        return (stream_page_t*)(base_addr + current_page->m_prev_page);
     }
 
     stream_page_t* stream_get_next_page(stream_context_t* ctx, stream_page_t* current_page)
     {
-        if (current_page->m_next == 0)
+        if (current_page->m_next_page == 0)
             return nullptr;
         u8* base_addr = (u8*)nmmio::address_rw(ctx->m_mmstream);
-        return (stream_page_t*)(base_addr + current_page->m_next);
+        return (stream_page_t*)(base_addr + current_page->m_next_page);
     }
 
     // Public API
@@ -90,53 +104,52 @@ namespace ncore
     void stream_write_item(stream_context_t* ctx, u64 time, u64 id, const void* data, i32 size)
     {
         stream_page_t* current_page = stream_get_current_page(ctx);
+        u8*            base         = (u8*)nmmio::address_rw(ctx->m_mmstream);
+
         if (current_page == nullptr)
         {
-            current_page = (stream_page_t*)nmmio::address_rw(ctx->m_mmstream);
-            stream_page_initialize(current_page, nullptr);
-            ctx->m_current_page = current_page;
-        }
-        else if (current_page->m_item_count >= (i64)DARRAYSIZE(current_page->m_items))
-        {
-            // Allocate a new page
-            u8*            base_addr = (u8*)nmmio::address_rw(ctx->m_mmstream);
-            stream_page_t* new_page  = (stream_page_t*)(base_addr + ((u8*)current_page - base_addr) + sizeof(stream_page_t));
-            stream_page_initialize(new_page, current_page);
-            ctx->m_current_page = new_page;
-            current_page        = new_page;
+            stream_page_t* first_page = (stream_page_t*)base;
+            stream_page_initialize(base, first_page, nullptr);
+            ctx->m_current_page = first_page;
         }
 
         // Write item data at the end of the page
-        u8* item_addr = nullptr;
-        if (current_page->m_item_count == 0)
-        {
-            item_addr = (u8*)current_page + sizeof(stream_page_t);
+        i64 item_offset = current_page->m_size;
+        u8* item_addr   = base + item_offset;
 
-            current_page->m_time_begin = time;
-            current_page->m_time_end   = time;
-        }
-        else
-        {
-            i64 last_item_offset = current_page->m_items[current_page->m_item_count - 1];
-            u8* last_item_addr   = (u8*)current_page + last_item_offset;
-            i32 last_item_size   = *((i32*)(last_item_addr));
-            item_addr            = last_item_addr + sizeof(i32) + last_item_size;
-
-            if (time > current_page->m_time_end)
-                current_page->m_time_end = time;
-        }
+        if (time > current_page->m_time_end)
+            current_page->m_time_end = time;
 
         // Write item header
-        u64* item_header = (u64*)item_addr;
-        item_header[0]   = time;
-        item_header[1]   = id;
+        stream_item_header_t* item_header = (stream_item_header_t*)item_addr;
+        item_header->m_time_high          = (u32)(time >> 32);
+        item_header->m_time_low           = (u32)(time & 0xFFFFFFFF);
+        item_header->m_id_high            = (u32)(id >> 32);
+        item_header->m_id_low             = (u32)(id & 0xFFFFFFFF);
+        item_header->m_size               = (u32)size;
 
         // Write item data
-        u8* item_data = item_addr + sizeof(u64) * 2;
+        u8* item_data = (u8*)item_header + sizeof(stream_item_header_t);
         nmem::memcpy(item_data, data, size);
 
         // Update page metadata
-        current_page->m_items[current_page->m_item_count++] = (i8*)item_addr - (i8*)current_page;
+        current_page->m_items[current_page->m_item_count++] = item_offset;
+
+        // Check if we need to allocate a new page
+        if (current_page->m_item_count >= STREAM_PAGE_MAX_ITEMS)
+        {
+            // This page is full, allocate a new page, and a page needs to be aligned to 8 bytes
+            const u64 next_item_offset = ((u64)(item_data + size) + (8 - 1)) & ~(8 - 1);  // Align to 8 bytes
+            current_page->m_size       = next_item_offset;
+            stream_page_t* new_page    = (stream_page_t*)(base + next_item_offset);
+            stream_page_initialize(base, new_page, current_page);
+            ctx->m_current_page = new_page;
+        }
+        else
+        {
+            // Update current page size for the next item
+            current_page->m_size = ((u64)(item_data + size) + (4 - 1)) & ~(4 - 1);  // Align to 4 bytes
+        }
     }
 
     void stream_sync(stream_context_t* ctx) { nmmio::sync(ctx->m_mmstream); }
@@ -265,18 +278,16 @@ namespace ncore
         }
 
         // Retrieve the item
-        i64 item_offset = page->m_items[target_index];
-        u8* item_addr   = (u8*)page + item_offset;
-        u64* item_header = (u64*)item_addr;
-        out_item_time   = item_header[0];
-        out_item_id     = item_header[1];
-        u8* item_data   = item_addr + sizeof(u64) * 2;
+        u8*  base        = (u8*)nmmio::address_rw(iterator->m_stream_ctx->m_mmstream);
+        i64  item_offset = page->m_items[target_index];
+        u8*  item_addr   = base + item_offset;
+        u32* item_header = (u32*)item_addr;
+        out_item_time    = ((u64)item_header[0] << 32) | (u64)item_header[1];
+        out_item_id      = ((u64)item_header[2] << 32) | (u64)item_header[3];
+        out_item_size    = (i32)item_header[4];
 
-        // The size can be derived from the next item's offset, we always fill in the next item's offset since we
-        // need to know where the next item starts. If this is the last item, we can calculate the size from using
-        //
-        out_item_size = *((i32*)(item_data - sizeof(i32)));
-        out_item_data = (void*)item_data;
+        u8* item_data = item_addr + sizeof(u32) * 5;
+        out_item_data = item_data;
 
         return true;
     }

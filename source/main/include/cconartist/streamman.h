@@ -19,7 +19,7 @@ namespace ncore
     void              stream_sync(stream_context_t* ctx);
     void              stream_destroy(stream_context_t* ctx);
 
-    // Create a stream iterator
+    // Create a stream iterator (non-thread safe)
     stream_iterator_t* stream_create_iterator(stream_context_t* ctx);
     void               stream_destroy_iterator(stream_context_t* ctx, stream_iterator_t* iterator);
 
