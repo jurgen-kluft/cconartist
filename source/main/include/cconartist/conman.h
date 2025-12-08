@@ -9,6 +9,14 @@
 
 namespace ncore
 {
+    namespace nconartist
+    {
+        struct server_t;   // Forward declaration
+        struct servers_t;  // Forward declaration
+    }  // namespace nconartist
+
+    struct stream_context_t;
+
     enum connection_type_t
     {
         CONN_TCP,
@@ -21,12 +29,10 @@ namespace ncore
         STATE_DISCONNECTED
     };
 
-    struct server_context_t;  // Forward declaration
-
     struct connection_info_t
     {
-        server_context_t       *m_server_context;  // Back reference to server context
-        uint8_t                 m_remote_ip[16];   // IPv4 or IPv6 octet representation
+        nconartist::server_t   *m_server;         // Back reference to server
+        uint8_t                 m_remote_ip[16];  // IPv4 or IPv6 octet representation
         int                     m_remote_port;
         int                     m_local_port;
         connection_type_t       m_type;
@@ -34,6 +40,7 @@ namespace ncore
         uint64_t                m_last_active;
         uv_tcp_t               *m_handle;       // For TCP
         struct sockaddr_storage m_remote_addr;  // For UDP
+        stream_context_t       *m_stream_ctx;   // For streaming packets to disk
     };
 
     struct connection_manager_t

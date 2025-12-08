@@ -11,12 +11,12 @@ namespace ncore
 {
 #define SEND_POOL_SIZE 1024
 
-    typedef struct udp_send_pool_t
+    struct udp_send_pool_t
     {
         uv_udp_send_t pool[SEND_POOL_SIZE];
         int16_t       free_list[SEND_POOL_SIZE];  // Holds indices of free items
         int16_t       free_count;                 // Number of free items
-    } udp_send_pool_t;
+    };
 
     // Initialize pool
     void send_pool_init(udp_send_pool_t *send_pool)

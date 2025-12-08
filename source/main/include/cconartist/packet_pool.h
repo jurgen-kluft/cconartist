@@ -12,26 +12,35 @@
 
 namespace ncore
 {
-    typedef struct
+    struct packet_t
     {
         connection_info_t *m_conn;
         size_t             m_size;
         char               m_data[MAX_PACKET_SIZE];
-    } packet_t;
+    };
 
-    typedef struct
+    struct packet_pool_t
     {
+        packet_pool_t()
+            : m_packets(nullptr)
+            , m_free_list(nullptr)
+            , m_top(-1)
+            , m_capacity(0)
+        {
+            m_mutex = {};
+        }
+
         packet_t  *m_packets;
         int16_t   *m_free_list;
         int16_t    m_top;
         size_t     m_capacity;
         uv_mutex_t m_mutex;
-    } packet_pool_t;
+    };
 
-    packet_pool_t *packet_pool_create(size_t pool_size);
-    void           packet_pool_destroy(packet_pool_t *pool);
-    packet_t      *packet_acquire(packet_pool_t *pool);
-    void           packet_release(packet_pool_t *pool, packet_t *pkt);
+    void      packet_pool_init(size_t pool_size, packet_pool_t &pool);
+    void      packet_pool_release(packet_pool_t &pool);
+    packet_t *packet_acquire(packet_pool_t &pool);
+    void      packet_release(packet_pool_t &pool, packet_t *pkt);
 }  // namespace ncore
 
 #endif

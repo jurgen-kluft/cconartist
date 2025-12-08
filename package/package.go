@@ -3,7 +3,7 @@ package cconartist
 import (
 	"github.com/jurgen-kluft/ccode/denv"
 	ccore "github.com/jurgen-kluft/ccore/package"
-	cguiapp "github.com/jurgen-kluft/cguiapp/package"
+	cgui "github.com/jurgen-kluft/cgui/package"
 	cjson "github.com/jurgen-kluft/cjson/package"
 	clibuv "github.com/jurgen-kluft/clibuv/package"
 	cmmio "github.com/jurgen-kluft/cmmio/package"
@@ -22,7 +22,7 @@ func GetPackage() *denv.Package {
 	ccorepkg := ccore.GetPackage()
 	clibuvpkg := clibuv.GetPackage()
 	cmmiopkg := cmmio.GetPackage()
-	cguiapppkg := cguiapp.GetPackage()
+	cguiapppkg := cgui.GetPackage()
 	cjsonpkg := cjson.GetPackage()
 	cunittestpkg := cunittest.GetPackage()
 
@@ -41,6 +41,20 @@ func GetPackage() *denv.Package {
 	mainlib.AddDependencies(clibuvpkg.GetMainLib())
 	mainlib.AddDependencies(cmmiopkg.GetMainLib())
 
+	// server application
+	cconartist_server := denv.SetupCppAppProjectForDesktop(mainpkg, "cconartist_server", "server")
+	cconartist_server.CopyToOutput("source/main/plugins", "*.dylib", "plugins")
+	cconartist_server.AddDependency(mainlib)
+	cconartist_server.AddDependencies(cjsonpkg.GetMainLib())
+	cconartist_server.AddDependencies(cguiapppkg.GetMainLib())
+
+	// gui application
+	cconartist_gui := denv.SetupCppAppProjectForDesktop(mainpkg, "cconartist_gui", "gui")
+	cconartist_gui.CopyToOutput("source/main/plugins", "*.dylib", "plugins")
+	cconartist_gui.AddDependency(mainlib)
+	cconartist_gui.AddDependencies(cjsonpkg.GetMainLib())
+	cconartist_gui.AddDependencies(cguiapppkg.GetMainLib())
+
 	// test library
 	testlib := denv.SetupCppTestLibProject(mainpkg, name)
 	testlib.AddDependencies(ccorepkg.GetTestLib())
@@ -48,19 +62,13 @@ func GetPackage() *denv.Package {
 	testlib.AddDependencies(cmmiopkg.GetTestLib())
 	testlib.AddDependencies(cunittestpkg.GetTestLib())
 
-	// main application
-	cconartist := denv.SetupCppAppProjectForDesktop(mainpkg, "cconartist", "capp")
-	cconartist.CopyToOutput("source/main/plugins", "*.dylib", "plugins")
-	cconartist.AddDependency(mainlib)
-	cconartist.AddDependencies(cjsonpkg.GetMainLib())
-	cconartist.AddDependencies(cguiapppkg.GetMainLib())
-
 	// unittest project
 	maintest := denv.SetupCppTestProject(mainpkg, name)
 	maintest.AddDependencies(cunittestpkg.GetMainLib())
 	maintest.AddDependency(testlib)
 
-	mainpkg.AddMainApp(cconartist)
+	mainpkg.AddMainApp(cconartist_server)
+	mainpkg.AddMainApp(cconartist_gui)
 	mainpkg.AddMainLib(mainlib)
 	mainpkg.AddTestLib(testlib)
 	mainpkg.AddUnittest(maintest)
