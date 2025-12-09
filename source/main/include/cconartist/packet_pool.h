@@ -12,10 +12,12 @@
 
 namespace ncore
 {
+    class alloc_t;
+
     struct packet_t
     {
         connection_info_t *m_conn;
-        size_t             m_size;
+        u32                m_size;
         char               m_data[MAX_PACKET_SIZE];
     };
 
@@ -26,18 +28,20 @@ namespace ncore
             , m_free_list(nullptr)
             , m_top(-1)
             , m_capacity(0)
+            , m_allocator(nullptr)
         {
             m_mutex = {};
         }
 
         packet_t  *m_packets;
-        int16_t   *m_free_list;
-        int16_t    m_top;
-        size_t     m_capacity;
+        u16       *m_free_list;
+        i32        m_top;
+        i32        m_capacity;
         uv_mutex_t m_mutex;
+        alloc_t   *m_allocator;
     };
 
-    void      packet_pool_init(size_t pool_size, packet_pool_t &pool);
+    void      packet_pool_init(alloc_t *allocator, u16 pool_size, packet_pool_t &pool);
     void      packet_pool_release(packet_pool_t &pool);
     packet_t *packet_acquire(packet_pool_t &pool);
     void      packet_release(packet_pool_t &pool, packet_t *pkt);
