@@ -10,6 +10,8 @@
 #include <sys/ioctl.h>
 
 #include "ccore/c_target.h"
+#include "ccore/c_allocator.h"
+
 #include "clibuv/uv.h"
 
 #include "cconartist/channel.h"
@@ -56,7 +58,7 @@ namespace ncore
             int                   m_server_count;
             server_t             *m_servers;
             connection_manager_t *m_conn_mgr;
-            packet_pool_t         m_packet_pool;
+            packet_pool_t        *m_packet_pool;
             uv_async_t            m_async_send;       // async handle for sending packets
             uv_udp_t              m_udp_send_handle;  // UDP handle for sending packets
             udp_send_pool_t      *m_udp_send_pool;
@@ -107,14 +109,14 @@ namespace ncore
                 packet_t *pkt = packet_acquire(ctx->m_owner->m_packet_pool);
                 if (pkt)
                 {
-                    pkt->m_conn = info;
-                    pkt->m_size = nread;
+                    pkt->m_conn      = info;
+                    pkt->m_data_size = nread;
                     memcpy(pkt->m_data, buf->base, nread);
                     channel_push(ctx->m_owner->m_channel_packets_out, pkt);
 
                     info->m_last_active = uv_hrtime();
 
-                    printf("Received TCP packet from %s:%d, size: %zu\n", info->m_remote_ip, info->m_remote_port, pkt->m_size);
+                    printf("Received TCP packet from %s:%d, size: %zu\n", info->m_remote_ip, info->m_remote_port, pkt->m_data_size);
                 }
                 else
                 {
@@ -236,12 +238,12 @@ namespace ncore
                     info = connection_manager_commit(con_servers->m_conn_mgr, info);
                     memcpy(&info->m_remote_addr, addr, sizeof(struct sockaddr_storage));
 
-                    pkt->m_conn = info;
-                    pkt->m_size = nread;
+                    pkt->m_conn      = info;
+                    pkt->m_data_size = nread;
                     memcpy(pkt->m_data, buf->base, nread);
                     channel_push(con_servers->m_channel_packets_out, pkt);
 
-                    // printf("Received UDP packet from %s:%d, size: %zu\n", ip, port, pkt->m_size);
+                    // printf("Received UDP packet from %s:%d, size: %zu\n", ip, port, pkt->m_data_size);
                 }
             }
             if (buf->base)
@@ -302,8 +304,8 @@ namespace ncore
                             if (req)
                             {
                                 // TODO also reuse uv_buf_t from a pool
-                                uv_buf_t buf = uv_buf_init((char *)malloc(pkt->m_size), pkt->m_size);
-                                memcpy(buf.base, pkt->m_data, pkt->m_size);
+                                uv_buf_t buf = uv_buf_init((char *)malloc(pkt->m_data_size), pkt->m_data_size);
+                                memcpy(buf.base, pkt->m_data, pkt->m_data_size);
                                 req->data = buf.base;
                                 uv_write(req, (uv_stream_t *)pkt->m_conn->m_handle, &buf, 1, on_tcp_write_done);
                             }
@@ -316,7 +318,7 @@ namespace ncore
                     else if (pkt->m_conn->m_type == CONN_UDP)
                     {
                         // TODO also reuse uv_buf_t from a pool
-                        uv_buf_t       buf      = uv_buf_init(pkt->m_data, pkt->m_size);
+                        uv_buf_t       buf      = uv_buf_init((char *)pkt->m_data, pkt->m_data_size);
                         uv_udp_send_t *send_req = send_pool_acquire(con_servers->m_udp_send_pool);
                         if (send_req)
                         {
@@ -338,16 +340,16 @@ namespace ncore
             while (1)
             {
                 packet_t *pkt = (packet_t *)channel_pop(con_servers->m_channel_packets_out);
-                printf("[UI] Received packet from %s:%d size=%zu\n", pkt->m_conn->m_remote_ip, pkt->m_conn->m_remote_port, pkt->m_size);
+                printf("[UI] Received packet from %s:%d size=%zu\n", pkt->m_conn->m_remote_ip, pkt->m_conn->m_remote_port, pkt->m_data_size);
 
                 // Example: send response back
                 packet_t *out_pkt = packet_acquire(con_servers->m_packet_pool);
                 if (out_pkt)
                 {
-                    out_pkt->m_conn = pkt->m_conn;
-                    const char *msg = "Hello from UI!";
-                    out_pkt->m_size = strlen(msg);
-                    memcpy(out_pkt->m_data, msg, out_pkt->m_size);
+                    out_pkt->m_conn      = pkt->m_conn;
+                    const char *msg      = "Hello from UI!";
+                    out_pkt->m_data_size = strlen(msg);
+                    memcpy(out_pkt->m_data, msg, out_pkt->m_data_size);
                     channel_push(con_servers->m_channel_packets_in, out_pkt);
                     uv_async_send(&con_servers->m_async_send);  // Signal event loop immediately
                 }
@@ -367,6 +369,14 @@ static ncore::nconartist::server_config_t s_server_config[] = {
   {31371, ncore::nconartist::cUdpServerType, "DiscoveryPacket"},  // DiscoveryPacket UDP server
 };
 
+class malloc_based_allocator : public ncore::alloc_t
+{
+public:
+    malloc_based_allocator() {}
+    virtual void *v_allocate(u32 size, u32 align) override { return malloc(size); }
+    virtual void v_deallocate(void *ptr) override { free(ptr); }
+};
+
 int main()
 {
     uv_loop_t       *loop = uv_default_loop();
@@ -376,18 +386,19 @@ int main()
     ncore::connection_manager_t conn_mgr;
     connection_manager_init(&conn_mgr, INITIAL_CONN_CAPACITY);
 
-    ncore::nconartist::servers_t ctx;                  // Manager of all servers
+    // TODO; get an allocator suitable for desktop applications, e.g. mimalloc ?
+    malloc_based_allocator mba;
+    alloc_t *allocator = &mba;
+
+      ncore::nconartist::servers_t ctx;                // Manager of all servers
     ctx.m_loop                = loop;                  // Event loop
     ctx.m_channel_packets_out = &channel_packets_out;  // Libuv → UI
     ctx.m_channel_packets_in  = &channel_packets_in;   // UI → Libuv
     ctx.m_conn_mgr            = &conn_mgr;             // Connection manager
-    packet_pool_init(PACKET_POOL_SIZE, ctx.m_packet_pool);
-    ctx.m_udp_send_pool    = (ncore::udp_send_pool_t *)malloc(sizeof(udp_send_pool_t));
-    ctx.m_tcp_write_pool   = (ncore::tcp_write_pool_t *)malloc(sizeof(tcp_write_pool_t));
-    ctx.m_decoder_registry = ncore::nplugins::create_registry("./plugins", 64, loop);
-
-    send_pool_init(ctx.m_udp_send_pool);
-    write_pool_init(ctx.m_tcp_write_pool);
+    ctx.m_packet_pool         = packet_pool_create(allocator, 1024, 512);
+    ctx.m_udp_send_pool       = send_pool_create(allocator, 512);
+    ctx.m_tcp_write_pool      = write_pool_create(allocator, 512);
+    ctx.m_decoder_registry    = ncore::nplugins::create_registry("./plugins", 64, loop);
 
     uv_async_init(loop, &ctx.m_async_send, ncore::nconartist::on_async_send);
     ctx.m_async_send.data = &ctx;
@@ -411,6 +422,11 @@ int main()
     connection_manager_destroy(&conn_mgr);
     channel_destroy(&channel_packets_out);
     channel_destroy(&channel_packets_in);
-    packet_pool_release(ctx.m_packet_pool);
+
+    packet_pool_destroy(ctx.m_packet_pool);
+    send_pool_destroy(ctx.m_udp_send_pool);
+    write_pool_destroy(ctx.m_tcp_write_pool);
+
+
     return 0;
 }

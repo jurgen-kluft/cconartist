@@ -18,34 +18,33 @@ UNITTEST_SUITE_BEGIN(packet_pool)
 
         UNITTEST_TEST(initialize)
         {
-            packet_pool_t pool;
-            packet_pool_init(Allocator, 10, pool);
+            packet_pool_t* pool = packet_pool_create(Allocator, 10, 256);
 
-            packet_pool_release(pool);
+            packet_pool_destroy(pool);
         }
 
         UNITTEST_TEST(acquire_release)
         {
-            packet_pool_t pool;
-            packet_pool_init(Allocator, 10, pool);
+            packet_pool_t* pool = packet_pool_create(Allocator, 10, 256);
 
             packet_t* packet = packet_acquire(pool);
             CHECK_NOT_NULL(packet);
+            CHECK_EQUAL((u32)256, packet->m_data_capacity);
 
             packet_release(pool, packet);
 
-            packet_pool_release(pool);
+            packet_pool_destroy(pool);
         }
 
         UNITTEST_TEST(acquire_release_maximum)
         {
-            packet_pool_t pool;
-            packet_pool_init(Allocator, 10, pool);
+            packet_pool_t* pool = packet_pool_create(Allocator, 10, 256);
 
             packet_t* packets[10];
             for (int i = 0; i < 10; ++i)
             {
                 packets[i] = packet_acquire(pool);
+                CHECK_EQUAL((u32)256, packets[i]->m_data_capacity);
                 CHECK_NOT_NULL(packets[i]);
             }
 
@@ -57,9 +56,8 @@ UNITTEST_SUITE_BEGIN(packet_pool)
                 packet_release(pool, packets[i]);
             }
 
-            packet_pool_release(pool);
+            packet_pool_destroy(pool);
         }
-
     }
 }
 UNITTEST_SUITE_END
