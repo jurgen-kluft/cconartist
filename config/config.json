@@ -5,7 +5,7 @@
     "servers": [
         {
             "name": "GeekOpen TCP Server",
-            "type": "tcp",
+            "data-type": "tcp",
             "port": 31330,
             "decoders": [
                 "geekopen"
@@ -13,7 +13,7 @@
         },
         {
             "name": "Sensors UDP Server",
-            "type": "udp",
+            "data-type": "udp",
             "port": 31370,
             "decoders": [
                 "sensorpacket"
@@ -21,11 +21,69 @@
         },
         {
             "name": "Sensors TCP Server",
-            "type": "tcp",
+            "data-type": "tcp",
             "port": 31372,
             "decoders": [
                 "sensorpacket"
             ]
         }
-    ]
+    ],
+    "streams": [
+        {
+            "name": "kitchen_2-key_wall_switch-json",
+            "user-id": "AE19C0FFEE12",
+            "user-type": "text",
+            "data-type": "fixed-data",
+            "data-size": 256
+        },
+        {
+            "name": "kitchen_2-key_wall_switch_0",
+            "user-id": "AE19C0FFEE12",
+            "user-type": "switch0",
+            "data-type": "fixed-u8"
+        },
+        {
+            "name": "kitchen_2-key_wall_switch_1",
+            "user-id": "AE19C0FFEE12",
+            "user-type": "switch1",
+            "data-type": "fixed-u8"
+        },
+        {
+            "name": "bathroom_2-key_wall_switch_0",
+            "user-id": "FE00C0FFEE12",
+            "user-type": "switch0",
+            "data-type": "fixed-u8"
+        },
+        {
+            "name": "bathroom_2-key_wall_switch_1",
+            "user-id": "FE00C0FFEE12",
+            "user-type": "switch1",
+            "data-type": "fixed-u8"
+        },
+        {
+            "name": "main_bed-room_smart_socket_voltage",
+            "user-id": "9876543210AB",
+            "user-type": "voltage",
+            "data-type": "fixed-u16"
+        },
+        {
+            "name": "main_bed-room_smart_socket_current",
+            "user-id": "9876543210AB",
+            "user-type": "current",
+            "data-type": "fixed-u8"
+        },
+        {
+            "name": "main_bed-room_smart_socket_power",
+            "user-id": "9876543210AB",
+            "user-type": "power",
+            "data-type": "fixed-f32"
+        },
+        {
+            "name": "main_bed-room_smart_socket_energy",
+            "user-id": "9876543210AB",
+            "user-type": "energy",
+            "data-type": "fixed-f32"
+        }
+    ],
+]
 }

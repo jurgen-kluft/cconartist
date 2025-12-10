@@ -1,509 +1,549 @@
 #include "ccore/c_allocator.h"
 #include "ccore/c_memory.h"
 #include "ccore/c_qsort.h"
+#include "ccore/c_runes.h"
 
 #include "cconartist/streamman.h"
+
+#include "clibuv/uv.h"
 #include "cmmio/c_mmio.h"
 
+#include <time.h>
+#include <dlfcn.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 namespace ncore
 {
-    // Note: 4GB is the maximum size of a stream file since we are using 32-bit offsets for items
-#define DSTREAM_MAX_FILESIZE ((u64)4 * 1024 * 1024 * 1024)  // 4 GB, since we are using 32-bit offsets for items
-#define DSTREAM_NAME_MAXLEN  64
-
     // Notes:
-    // - Memory Mapped Files are not to be used accross different platforms with different endianness
-    // - Stream Context is not thread safe, the user must ensure proper locking if multiple threads access the same stream context
-    // - Iterators are not thread safe, only one iterator per stream context should be used at a time
+    // - Stream Files are not to be used accross different platforms with different endianness
+    // - All is not thread safe, the user must ensure proper locking if multiple threads access this
+    // - stream_manager_t::update ?, where every night it analyzes the streams and finalize/rotates them if needed.
+    // - file naming convention: {name}_XXXX.stream, where XXXX is a 4 digit incrementing number.
+
+    typedef s8          stream_mode_t;
+    const stream_mode_t c_stream_mode_readonly  = 1;
+    const stream_mode_t c_stream_mode_readwrite = 2;
+
+    struct stream_id_info_t
+    {
+        stream_type_t m_stream_type;
+        stream_mode_t m_stream_mode;
+        u16           m_stream_index;
+    };
+
+    static stream_id_info_t s_decode_stream_id(stream_id_t stream_id)
+    {
+        stream_id_info_t info;
+        info.m_stream_type  = (stream_type_t)((stream_id >> 24) & 0xFF);
+        info.m_stream_mode  = (stream_mode_t)((stream_id >> 16) & 0xFF);
+        info.m_stream_index = (u16)(stream_id & 0xFFFF);
+        return info;
+    }
+
+    static stream_id_t s_encode_stream_id(stream_id_info_t const& info) { return ((stream_id_t)info.m_stream_type << 24) | ((stream_id_t)info.m_stream_mode << 16) | (stream_id_t)info.m_stream_index; }
+
     struct stream_header_t
     {
-        char m_name[DSTREAM_NAME_MAXLEN];  // Name of the stream
-        u64  m_time_begin;                 // Time of the first item in the stream
-        u64  m_time_end;                   // Time of the last item in the stream
-        u32  m_ids_count;                  // Number of ids currently used
-        u32  m_ids_capacity;               // Capacity of the ids array
-        u32  m_item_count;                 // Number of items currently in the stream
-        u32  m_item_capacity;              // Capacity of items that can be stored in the stream
-        u64  m_item_write_cursor;          // Cursor of where the next item will be written in the stream
-        // Here in the stream we should be 8 byte aligned
-        // Followed by an array of ids (u64) (unsorted)
-        // Followed by an array of item offsets (u32)
+        u64 m_user_id;       // Stream identifier
+        u16 m_user_type;     // Type of the stream
+        u16 m_stream_type;   // (stream_type_t) Type of stream
+        u32 m_sizeof_item;   // Size of each item in the stream (for fixed size streams)
+        u64 m_reserved2;     // Reserved for future use
+        u64 m_time_begin;    // Time of the first item in the stream
+        u64 m_stream_size;   // Size of the stream file
+        u64 m_item_count;    // Number of items in the stream
+        u64 m_time_end;      // Time of the last item in the stream
+        u64 m_write_cursor;  // Cursor of where the next data will be written in the stream
     };
 
-    // Size of item offset array = DSTREAM_MAX_FILESIZE / (sizeof(u32) +sizeof(stream_item_t) + average_item_data_size)
-    // e.g. For sensor data where the average item data size is 4 bytes:
-    // DSTREAM_MAX_FILESIZE / (4 + 8 + 4) = 4294967296 / 16 = 256 * 1024 * 1024 = 268435456 items
-
-    // This structure is not part of the memory mapped file, it is used internally
-    static s8 s_cmp_ids(const void* lhs, const void* rhs, const void* user_data)
+    struct stream_manager_t
     {
-        u16 const  lhs_idx      = *(u16 const*)lhs;
-        u16 const  rhs_idx      = *(u16 const*)rhs;
-        const u64* unsorted_ids = (const u64*)user_data;
-        u64 const  lhs_id       = unsorted_ids[lhs_idx];
-        u64 const  rhs_id       = unsorted_ids[rhs_idx];
-        if (lhs_id < rhs_id)
-            return -1;
-        if (lhs_id > rhs_id)
-            return 1;
-        return 0;
-    }
-
-// Stream Item Layout (packed structure)
-#pragma pack(push, 1)
-    struct stream_item_t
-    {
-        u64  get_time(u64 stream_begin_time) const;  // Time (6 bytes) is relative to stream start time (unit = ms)
-        void set_time(u64 relative_time);            //
-        u16  get_id_index() const;                   // Index is indexing into an array of ID's, we can have up to 65536 unique ID's per stream
-        void set_id_index(u16 idx);                  //
-        // size can be calculated by using the TOC next item offset - this item offset - sizeof(header)
-        // followed by data...
-
-        u8 m_time[6];  // 6 bytes time (relative to stream start time), 2 bytes id index
-        u8 m_id[2];    // 2 bytes id index
+        char*                   m_base_path;
+        time_t                  m_last_update_time;
+        alloc_t*                m_allocator;
+        i32                     m_num_ro_streams;
+        i32                     m_max_ro_streams;
+        nmmio::mappedfile_t**   m_ro_stream_files;
+        const stream_header_t** m_ro_streams;
+        const stream_header_t** m_ro_streams_sorted;  // For quick lookup by user_id/user_type
+        i32                     m_num_rw_streams;
+        i32                     m_max_rw_streams;
+        const char**            m_rw_stream_filepaths;
+        nmmio::mappedfile_t**   m_rw_stream_files;
+        stream_header_t**       m_rw_streams;
     };
 
-    u64 stream_item_t::get_time(u64 stream_begin_time) const
+    static bool has_ro_extension(const char* filename)
     {
-        u64 time = 0;
-        time |= ((u64)m_time[0]) << 0;
-        time |= ((u64)m_time[1]) << 8;
-        time |= ((u64)m_time[2]) << 16;
-        time |= ((u64)m_time[3]) << 24;
-        time |= ((u64)m_time[4]) << 32;
-        time |= ((u64)m_time[5]) << 40;
-        return stream_begin_time + time;
+        const char* ext = strrchr(filename, '.');
+        return (ext && strcmp(ext, ".rostream") == 0);
     }
 
-    void stream_item_t::set_time(u64 relative_time)
+    static bool has_rw_extension(const char* filename)
     {
-        m_time[0] = (u8)((relative_time >> 0) & 0xFF);
-        m_time[1] = (u8)((relative_time >> 8) & 0xFF);
-        m_time[2] = (u8)((relative_time >> 16) & 0xFF);
-        m_time[3] = (u8)((relative_time >> 24) & 0xFF);
-        m_time[4] = (u8)((relative_time >> 32) & 0xFF);
-        m_time[5] = (u8)((relative_time >> 40) & 0xFF);
+        const char* ext = strrchr(filename, '.');
+        return (ext && strcmp(ext, ".rwstream") == 0);
     }
 
-    u16 stream_item_t::get_id_index() const { return (((u16)m_id[0] << 8) | (u16)m_id[1]); }
-
-    void stream_item_t::set_id_index(u16 idx)
+    void stream_manager_resize_ro(stream_manager_t* m)
     {
-        m_id[0] = (u8)((idx >> 8) & 0xFF);
-        m_id[1] = (u8)(idx & 0xFF);
-    }
-
-#pragma pack(pop)
-
-    struct stream_context_t;
-
-    struct stream_iterator_t
-    {
-        i32               m_cur_item_index;
-        i32               m_max_item_index;
-        stream_context_t* m_stream_context;
-
-        DCORE_CLASS_PLACEMENT_NEW_DELETE
-    };
-
-    struct stream_context_t
-    {
-        alloc_t*             m_allocator;
-        nmmio::mappedfile_t* m_mmstream;
-
-        // Stream TOC - read/write
-        u8*              m_mmstream_base_rw;
-        stream_header_t* m_header;              // Stream header
-        u64*             m_ids_array_unsorted;  // The unsorted array of IDs that exists in the stream
-        u32*             m_item_offsets;        // Array of item offsets
-        u8*              m_items;               // Stream items start here
-
-        // Stream TOC - read-only
-        const u8*              m_mmstream_base_ro;
-        const stream_header_t* m_header_ro;              // Stream header
-        const u64*             m_ids_array_unsorted_ro;  // The unsorted array of IDs that exists in the stream
-        const u32*             m_item_offsets_ro;        // Array of item offsets
-        const u8*              m_items_ro;               // Stream items start here
-
-        // Stream TOC - shared
-        u16* m_ids_idx_array_sorted;  // Array of indices (indirection) into the main ID array, sorted by ID
-        int  m_num_active_iterators;
-
-        DCORE_CLASS_PLACEMENT_NEW_DELETE
-
-        i16 find_or_add_id(u64 id);
-        i16 find_id(u64 id) const;
-    };
-
-    static stream_context_t* new_stream_context(alloc_t* allocator)
-    {
-        stream_context_t* ctx        = g_construct<stream_context_t>(allocator);
-        ctx->m_allocator             = allocator;
-        ctx->m_mmstream              = nullptr;
-        ctx->m_mmstream_base_rw      = nullptr;
-        ctx->m_mmstream_base_ro      = nullptr;
-        ctx->m_header                = nullptr;
-        ctx->m_ids_array_unsorted    = nullptr;
-        ctx->m_item_offsets          = nullptr;
-        ctx->m_items                 = nullptr;
-        ctx->m_header_ro             = nullptr;
-        ctx->m_ids_array_unsorted_ro = nullptr;
-        ctx->m_item_offsets_ro       = nullptr;
-        ctx->m_items_ro              = nullptr;
-        ctx->m_ids_idx_array_sorted  = nullptr;
-        ctx->m_num_active_iterators  = 0;
-        nmmio::allocate(allocator, ctx->m_mmstream);
-        return ctx;
-    }
-
-    static void destroy_stream_context(stream_context_t* ctx)
-    {
-        if (ctx)
+        if (m->m_num_ro_streams >= m->m_max_ro_streams)
         {
-            if (ctx->m_ids_idx_array_sorted != nullptr)
-            {
-                g_deallocate_array(ctx->m_allocator, ctx->m_ids_idx_array_sorted);
-                ctx->m_ids_idx_array_sorted = nullptr;
-            }
-            if (ctx->m_mmstream)
-            {
-                nmmio::deallocate(ctx->m_allocator, ctx->m_mmstream);
-                ctx->m_mmstream         = nullptr;
-                ctx->m_mmstream_base_rw = nullptr;
-                ctx->m_mmstream_base_ro = nullptr;
-            }
-            g_destruct(ctx->m_allocator, ctx);
+            // Resize the read-only arrays
+            i32                     new_max_ro_streams    = m->m_max_ro_streams * 2;
+            nmmio::mappedfile_t**   new_ro_stream_files   = g_reallocate_array<nmmio::mappedfile_t*>(m->m_allocator, m->m_ro_stream_files, m->m_max_ro_streams, new_max_ro_streams);
+            const stream_header_t** new_ro_streams        = g_reallocate_array<const stream_header_t*>(m->m_allocator, m->m_ro_streams, m->m_max_ro_streams, new_max_ro_streams);
+            const stream_header_t** new_ro_streams_sorted = g_reallocate_array<const stream_header_t*>(m->m_allocator, m->m_ro_streams_sorted, m->m_max_ro_streams, new_max_ro_streams);
+            m->m_ro_stream_files                          = new_ro_stream_files;
+            m->m_ro_streams                               = new_ro_streams;
+            m->m_ro_streams_sorted                        = new_ro_streams_sorted;
+            m->m_max_ro_streams                           = new_max_ro_streams;
         }
     }
 
-    static void stream_init_toc(stream_context_t* ctx)
+    void stream_manager_resize_rw(stream_manager_t* m)
     {
-        u16* ids_idx_array_sorted = g_allocate_array<u16>(ctx->m_allocator, ctx->m_header_ro->m_ids_capacity);
-        for (u32 i = 0; i < ctx->m_header_ro->m_ids_count; i++)
-            ids_idx_array_sorted[i] = i;
-
-        ctx->m_ids_idx_array_sorted = ids_idx_array_sorted;
-
-        // Sort the ids array
-        nsort::sort(ids_idx_array_sorted, ctx->m_header_ro->m_ids_count, s_cmp_ids, ctx->m_ids_array_unsorted_ro);
-    }
-
-    static void stream_init_toc_rw(stream_context_t* ctx, stream_header_t* header, u8* base)
-    {
-        ctx->m_mmstream_base_rw = base;
-        ctx->m_mmstream_base_ro = base;
-
-        ctx->m_header                = header;
-        ctx->m_header_ro             = header;
-        ctx->m_ids_array_unsorted    = (u64*)(base + sizeof(stream_header_t));
-        ctx->m_item_offsets          = (u32*)((u8*)ctx->m_ids_array_unsorted + (sizeof(u64) * ctx->m_header->m_ids_capacity));
-        ctx->m_items                 = (u8*)((u8*)ctx->m_item_offsets + (sizeof(u32) * ctx->m_header->m_item_capacity));
-        ctx->m_ids_array_unsorted_ro = (const u64*)ctx->m_ids_array_unsorted;
-        ctx->m_item_offsets_ro       = (const u32*)ctx->m_item_offsets;
-        ctx->m_items_ro              = (const u8*)ctx->m_items;
-
-        stream_init_toc(ctx);
-    }
-
-    static void stream_init_toc_ro(stream_context_t* ctx, const stream_header_t* header, const u8* base)
-    {
-        ctx->m_mmstream_base_ro = base;
-        ctx->m_mmstream_base_rw = nullptr;
-
-        ctx->m_header             = nullptr;
-        ctx->m_ids_array_unsorted = nullptr;
-        ctx->m_item_offsets       = nullptr;
-        ctx->m_items              = nullptr;
-
-        ctx->m_header_ro             = header;
-        ctx->m_ids_array_unsorted_ro = (const u64*)(base + sizeof(stream_header_t));
-        ctx->m_item_offsets_ro       = (const u32*)((const u8*)ctx->m_ids_array_unsorted_ro + (sizeof(u64) * ctx->m_header_ro->m_ids_capacity));
-        ctx->m_items_ro              = (const u8*)((const u8*)ctx->m_item_offsets_ro + (sizeof(u32) * ctx->m_header_ro->m_item_capacity));
-
-        stream_init_toc(ctx);
-    }
-
-    // Public API
-    stream_context_t* stream_open_ro(alloc_t* allocator, const char* abs_filepath, const char* name)
-    {
-        stream_context_t* ctx = new_stream_context(allocator);
-        if (nmmio::exists(ctx->m_mmstream, abs_filepath))
+        if (m->m_num_rw_streams >= m->m_max_rw_streams)
         {
-            if (nmmio::open_ro(ctx->m_mmstream, abs_filepath))
-            {
-                const u8*              base          = (const u8*)nmmio::address_ro(ctx->m_mmstream);
-                const stream_header_t* stream_header = (const stream_header_t*)base;
-                if (strncmp(stream_header->m_name, name, DSTREAM_NAME_MAXLEN) == 0)
-                {
-                    stream_init_toc_ro(ctx, stream_header, base);
-                    return ctx;
-                }
-                nmmio::close(ctx->m_mmstream);
-            }
-        }
-        destroy_stream_context(ctx);
-        return nullptr;
-    }
-
-    stream_context_t* stream_open_rw(alloc_t* allocator, const char* abs_filepath, const char* name)
-    {
-        stream_context_t* ctx = new_stream_context(allocator);
-        if (nmmio::exists(ctx->m_mmstream, abs_filepath))
-        {
-            if (nmmio::open_rw(ctx->m_mmstream, abs_filepath))
-            {
-                u8*              base          = (u8*)nmmio::address_rw(ctx->m_mmstream);
-                stream_header_t* stream_header = (stream_header_t*)base;
-                if (strncmp(stream_header->m_name, name, DSTREAM_NAME_MAXLEN) == 0)
-                {
-                    stream_init_toc_rw(ctx, stream_header, base);
-                    return ctx;
-                }
-                nmmio::close(ctx->m_mmstream);
-            }
-        }
-        destroy_stream_context(ctx);
-        return nullptr;
-    }
-
-    stream_context_t* stream_create(alloc_t* allocator, const char* abs_filepath, const char* name, u16 max_ids, u32 average_item_data_size)
-    {
-        const i32 max_items = (i32)((u32)DSTREAM_MAX_FILESIZE / (u32)(sizeof(u32) + (6 + 2 + average_item_data_size)));
-
-        stream_context_t* ctx = new_stream_context(allocator);
-
-        if (!nmmio::exists(ctx->m_mmstream, abs_filepath))
-        {
-            if (!nmmio::create_rw(ctx->m_mmstream, abs_filepath, DSTREAM_MAX_FILESIZE))
-            {
-                destroy_stream_context(ctx);
-                return nullptr;
-            }
-        }
-        else
-        {
-            if (!nmmio::open_rw(ctx->m_mmstream, abs_filepath))
-            {
-                destroy_stream_context(ctx);
-                return nullptr;
-            }
-        }
-
-        u8*              base          = (u8*)nmmio::address_rw(ctx->m_mmstream);
-        stream_header_t* stream_header = (stream_header_t*)base;
-
-        // Initialize the stream
-        strncpy(stream_header->m_name, name, DSTREAM_NAME_MAXLEN);
-        stream_header->m_name[63]      = '\0';
-        stream_header->m_time_begin    = 0;
-        stream_header->m_time_end      = 0;
-        stream_header->m_ids_count     = 0;
-        stream_header->m_ids_capacity  = max_ids;
-        stream_header->m_item_count    = 0;
-        stream_header->m_item_capacity = max_items;
-
-        stream_init_toc_rw(ctx, stream_header, base);
-
-        // Initialize write offset
-        stream_header->m_item_write_cursor = sizeof(stream_header_t) + (sizeof(u64) * stream_header->m_ids_capacity) + (sizeof(u32) * stream_header->m_item_capacity);
-
-        nmmio::sync(ctx->m_mmstream);
-        return ctx;
-    }
-
-    bool stream_close(stream_context_t*& ctx)
-    {
-        if (ctx != nullptr)
-        {
-            if (ctx->m_mmstream != nullptr)
-            {
-                nmmio::sync(ctx->m_mmstream);
-                nmmio::close(ctx->m_mmstream);
-            }
-            destroy_stream_context(ctx);
-            ctx = nullptr;
-            return true;
-        }
-        return false;
-    }
-
-    void stream_sync(stream_context_t* ctx)
-    {
-        if (ctx != nullptr && ctx->m_mmstream != nullptr)
-            nmmio::sync(ctx->m_mmstream);
-    }
-
-    void stream_destroy(stream_context_t* ctx)
-    {
-        if (ctx)
-        {
-            ASSERT(ctx->m_num_active_iterators == 0);
-            destroy_stream_context(ctx);
+            // Resize the read-write arrays
+            i32                   new_max_rw_streams      = m->m_max_rw_streams * 2;
+            const char**          new_rw_stream_filepaths = g_reallocate_array<const char*>(m->m_allocator, m->m_rw_stream_filepaths, m->m_max_rw_streams, new_max_rw_streams);
+            nmmio::mappedfile_t** new_rw_stream_files     = g_reallocate_array<nmmio::mappedfile_t*>(m->m_allocator, m->m_rw_stream_files, m->m_max_rw_streams, new_max_rw_streams);
+            stream_header_t**     new_rw_streams          = g_reallocate_array<stream_header_t*>(m->m_allocator, m->m_rw_streams, m->m_max_rw_streams, new_max_rw_streams);
+            m->m_rw_stream_filepaths                      = new_rw_stream_filepaths;
+            m->m_rw_stream_files                          = new_rw_stream_files;
+            m->m_rw_streams                               = new_rw_streams;
+            m->m_max_rw_streams                           = new_max_rw_streams;
         }
     }
 
-    // Create a stream iterator
-    stream_iterator_t* stream_create_iterator(stream_context_t* ctx)
+    void stream_manager_add_ro_stream(stream_manager_t* m, const char* filepath)
     {
-        ctx->m_num_active_iterators++;
-        stream_iterator_t* iterator = g_construct<stream_iterator_t>(ctx->m_allocator);
-        iterator->m_cur_item_index  = 0;
-        iterator->m_stream_context  = ctx;
-        // Determine the maximum valid item index (last index). If there are no items, set to -1.
+        stream_manager_resize_ro(m);
+
+        // Open the mapped file
+        nmmio::mappedfile_t* mmfile_ro = nullptr;
+        nmmio::allocate(m->m_allocator, mmfile_ro);
+        if (nmmio::open_ro(mmfile_ro, filepath))
         {
-            const u32 item_count = (ctx->m_header != nullptr) ? ctx->m_header->m_item_count : ctx->m_header_ro->m_item_count;
-            if (item_count == 0)
+            // Get the stream header
+            const stream_header_t* header = (stream_header_t*)nmmio::address_ro(mmfile_ro);
+            if (header != nullptr)
             {
-                iterator->m_max_item_index = -1;
+                // Register the read-only stream
+                m->m_ro_streams[m->m_num_ro_streams]        = header;
+                m->m_ro_streams_sorted[m->m_num_ro_streams] = header;
+                m->m_num_ro_streams += 1;
             }
             else
             {
-                iterator->m_max_item_index = (i32)(item_count - 1);
+                nmmio::close(mmfile_ro);
             }
         }
-        return iterator;
     }
 
-    void stream_destroy_iterator(stream_context_t* ctx, stream_iterator_t* iterator)
+    i32 stream_manager_count_ro_streams(stream_manager_t* m, u64 user_id, u16 user_type)
     {
-        if (iterator != nullptr && iterator->m_stream_context == ctx)
+        i32 count = 0;
+        for (i32 i = 0; i < m->m_num_ro_streams; i++)
         {
-            ctx->m_num_active_iterators--;
-            g_destruct(ctx->m_allocator, iterator);
+            const stream_header_t* header = m->m_ro_streams[i];
+            if ((header->m_user_id == user_id) && (header->m_user_type == user_type))
+            {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    void stream_manager_add_rw_stream(stream_manager_t* m, const char* filepath)
+    {
+        stream_manager_resize_rw(m);
+
+        // Open the mapped file
+        nmmio::mappedfile_t* mmfile_rw = nullptr;
+        nmmio::allocate(m->m_allocator, mmfile_rw);
+        if (nmmio::open_rw(mmfile_rw, filepath))
+        {
+            // Get the stream header
+            stream_header_t* header = (stream_header_t*)nmmio::address_rw(mmfile_rw);
+            if (header != nullptr)
+            {
+                // Register the read-write stream
+                m->m_rw_stream_filepaths[m->m_num_rw_streams] = g_allocate_array<char>(m->m_allocator, strlen(filepath) + 1);
+                strcpy((char*)m->m_rw_stream_filepaths[m->m_num_rw_streams], filepath);
+                m->m_rw_stream_files[m->m_num_rw_streams] = mmfile_rw;
+                m->m_rw_streams[m->m_num_rw_streams]      = header;
+                m->m_num_rw_streams += 1;
+            }
+            else
+            {
+                nmmio::close(mmfile_rw);
+            }
         }
     }
 
-    // Move iterator forward or backward by items_to_advance
-    void stream_iterator_advance(stream_iterator_t* iterator, i64 items_to_advance)
+    stream_manager_t* stream_manager_create(alloc_t* allocator, i32 max_streams, const char* base_path)
     {
-        if (iterator->m_max_item_index < 0)
-            return;  // No items in the stream
+        // Create the stream manager
+        //   - Create arrays for read-only and read-write streams
 
-        i64 new_index = (i64)iterator->m_cur_item_index + items_to_advance;
-        if (new_index < 0)
-            new_index = 0;
-        if (new_index > (i64)iterator->m_max_item_index)
-            new_index = (i64)iterator->m_max_item_index;
-        iterator->m_cur_item_index = (i32)new_index;
+        stream_manager_t* m = g_construct<stream_manager_t>(allocator);
+        m->m_base_path      = g_allocate_array<char>(allocator, strlen(base_path) + 1);
+        strcpy((char*)m->m_base_path, base_path);
+        m->m_last_update_time    = time(nullptr);  // Current time
+        m->m_allocator           = allocator;
+        m->m_num_ro_streams      = 0;
+        m->m_max_ro_streams      = max_streams;
+        m->m_ro_streams          = g_allocate_array<const stream_header_t*>(allocator, max_streams);
+        m->m_ro_streams_sorted   = g_allocate_array<const stream_header_t*>(allocator, max_streams);
+        m->m_num_rw_streams      = 0;
+        m->m_max_rw_streams      = max_streams;
+        m->m_rw_stream_filepaths = g_allocate_array<const char*>(allocator, max_streams);
+        m->m_rw_stream_files     = g_allocate_array<nmmio::mappedfile_t*>(allocator, max_streams);
+        m->m_rw_streams          = g_allocate_array<stream_header_t*>(allocator, max_streams);
+
+        char full_path[MAXPATHLEN];
+
+        // Scan the base path for existing stream files:
+        //   - *.ro.stream -> read-only streams
+        //   - *.rw.stream -> read-write streams
+        DIR* dir = opendir(base_path);
+        if (dir)
+        {
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != nullptr)
+            {
+                if (has_ro_extension(entry->d_name))
+                {
+                    snprintf(full_path, sizeof(full_path), "%s/%s", m->m_base_path, entry->d_name);
+                    stream_manager_add_ro_stream(m, full_path);
+                }
+                else if (has_rw_extension(entry->d_name))
+                {
+                    snprintf(full_path, sizeof(full_path), "%s/%s", m->m_base_path, entry->d_name);
+                    stream_manager_add_rw_stream(m, full_path);
+                }
+            }
+            closedir(dir);
+        }
+        return m;
     }
 
-    bool stream_is_full(stream_context_t* ctx)
+    void stream_manager_flush(stream_manager_t* manager)
     {
-        if (ctx->m_header != nullptr)
+        // Flush all read-write streams to disk
+        for (i32 i = 0; i < manager->m_num_rw_streams; i++)
         {
-            const stream_header_t* hdr = ctx->m_header;
-            return (hdr->m_item_write_cursor >= (u64)DSTREAM_MAX_FILESIZE);
+            nmmio::mappedfile_t* rw_file = manager->m_rw_stream_files[i];
+            if (rw_file != nullptr)
+            {
+                nmmio::sync(rw_file);
+            }
+        }
+    }
+
+    void stream_manager_update(stream_manager_t* manager)
+    {
+        // Check time since last update and skip if too soon
+        //  - We only want to do this once in a while, e.g. once every day
+        // Update the stream manager
+        //  - Check if any streams need to 'grow'
+        //    We can do this by 'closing' the stream, and opening it again with a larger size.
+        // Using m_time_begin and m_time_end together with m_item_count we can determine the throughput
+        // and determine how many days a stream still has to go before it should be extended in size.
+    }
+
+    void stream_manager_destroy(alloc_t* allocator, stream_manager_t*& manager)
+    {
+        // Destroy the stream manager
+        //  - Flush and close all open streams
+        //  - Deallocate all memory used by the stream manager
+
+        // Close all read-write streams
+        for (i32 i = 0; i < manager->m_num_rw_streams; i++)
+        {
+            nmmio::mappedfile_t* rw_file = manager->m_rw_stream_files[i];
+            if (rw_file != nullptr)
+            {
+                nmmio::sync(rw_file);
+                nmmio::close(rw_file);
+                nmmio::deallocate(manager->m_allocator, rw_file);
+            }
+        }
+        g_deallocate_array<const char*>(allocator, manager->m_rw_stream_filepaths);
+        g_deallocate_array<nmmio::mappedfile_t*>(allocator, manager->m_rw_stream_files);
+        g_deallocate_array<stream_header_t*>(allocator, manager->m_rw_streams);
+
+        // Close all read-only streams
+        for (i32 i = 0; i < manager->m_num_ro_streams; i++)
+        {
+            nmmio::mappedfile_t* ro_file = (nmmio::mappedfile_t*)manager->m_ro_streams[i];
+            if (ro_file != nullptr)
+            {
+                nmmio::close(ro_file);
+                nmmio::deallocate(manager->m_allocator, ro_file);
+            }
+        }
+
+        g_deallocate_array<nmmio::mappedfile_t*>(allocator, manager->m_ro_stream_files);
+        g_deallocate_array<const stream_header_t*>(allocator, manager->m_ro_streams);
+        g_deallocate_array<const stream_header_t*>(allocator, manager->m_ro_streams_sorted);
+
+        g_deallocate_array<char>(allocator, manager->m_base_path);
+
+        g_destruct(allocator, manager);
+    }
+
+    // Required: filename and extension need to be ASCII and are case-insensitive
+    static bool s_has_filename(const char* filepath, const char* filename)
+    {
+        i32 filepath_len = (i32)strnlen(filepath, MAXPATHLEN);
+
+        // Walk backwards to find the filename part, first the '.' to skip the extension
+        const char* fp  = filepath + filepath_len - 1;
+        const char* end = filepath + filepath_len;
+        while (*fp != '.')
+        {
+            if (fp == filepath)
+                return false;  // No '.' found, invalid
+            fp--;
+        }
+        // Now skip the '-00', which is the file index
+        fp -= 2;
+        if (*fp != '-')
+            return false;  // Invalid format
+        fp -= 1;
+
+        // Now walk backwards to find the '/' or start of string to get the base filename
+        const char* fp_end = fp;
+        while (*fp != '/' && *fp != '\\')
+        {
+            if (fp == filepath)
+                break;  // Reached the start of the string
+            fp--;
+        }
+
+        // Now compare the filename part (case insensitive)
+        const char* fn = filename;
+        while (*fn != '\0' && *fp != '\0' && fp < fp_end)
+        {
+            if (ascii::to_lower(*fn) != ascii::to_lower(*fp))
+                return false;
+            fn++;
+            fp++;
+        }
+        return (*fn == '\0') && (*fp == '.');
+    }
+
+    stream_id_t stream_register(stream_manager_t* m, stream_type_t stream_type, const char* name, u64 user_id, u16 user_type, u64 file_size, u32 sizeof_item)
+    {
+        // Check if a current read-write stream with this name exists, if so return its stream_id
+        for (i32 i = 0; i < m->m_num_rw_streams; i++)
+        {
+            if (s_has_filename(m->m_rw_stream_filepaths[i], name))
+            {
+                stream_id_info_t info;
+                info.m_stream_type  = stream_type;
+                info.m_stream_mode  = c_stream_mode_readwrite;
+                info.m_stream_index = (u16)i;
+                return s_encode_stream_id(info);
+            }
+        }
+        // Otherwise create a new read-write stream and return its stream_id
+        // Also initialize m_time_begin and m_time_end to the current time
+        stream_id_info_t info;
+        info.m_stream_type  = stream_type;
+        info.m_stream_mode  = c_stream_mode_readwrite;
+        info.m_stream_index = (u16)m->m_num_rw_streams;
+
+        stream_manager_resize_rw(m);
+
+        const i32 stream_index = stream_manager_count_ro_streams(m, user_id, user_type);
+
+        nmmio::mappedfile_t* mmfile_rw = nullptr;
+        nmmio::allocate(m->m_allocator, mmfile_rw);
+        char filepath[MAXPATHLEN];
+        snprintf(filepath, sizeof(filepath), "%s/%s-%02i.rwstream", m->m_base_path, name, stream_index);
+        if (nmmio::create_rw(mmfile_rw, filepath, file_size))
+        {
+            // Initialize the stream header
+            stream_header_t* header = (stream_header_t*)nmmio::address_rw(mmfile_rw);
+            header->m_user_id       = user_id;
+            header->m_user_type     = user_type;
+            header->m_stream_type   = (u16)stream_type;
+            header->m_sizeof_item   = sizeof_item;
+            header->m_reserved2     = 0;
+            header->m_time_begin    = (u64)time(nullptr);
+            header->m_stream_size   = file_size;
+            header->m_item_count    = 0;
+            header->m_time_end      = header->m_time_begin;
+            header->m_write_cursor  = sizeof(stream_header_t);
+
+            // Register the read-write stream
+            m->m_rw_stream_filepaths[m->m_num_rw_streams] = g_allocate_array<char>(m->m_allocator, strlen(filepath) + 1);
+            strlcpy((char*)m->m_rw_stream_filepaths[m->m_num_rw_streams], filepath, strlen(filepath) + 1);
+            m->m_rw_stream_files[m->m_num_rw_streams] = mmfile_rw;
+            m->m_rw_streams[m->m_num_rw_streams]      = header;
+            m->m_num_rw_streams += 1;
         }
         else
         {
-            const stream_header_t* hdr = ctx->m_header_ro;
-            return (hdr->m_item_write_cursor >= (u64)DSTREAM_MAX_FILESIZE);
+            nmmio::deallocate(m->m_allocator, mmfile_rw);
         }
+
+        return s_encode_stream_id(info);
     }
 
-    // Write an item to the stream
-    bool stream_write_item(stream_context_t* ctx, u64 time, u64 id, const void* data, u32 size)
+    static u8* stream_write_u64_le(u8* dest, u64 value, s8 byte_count)
     {
-        if (ctx->m_header == nullptr)
-            return false;
-
-        stream_header_t* hdr = ctx->m_header;
-
-        // Check if stream is full, cannot write more data
-        if (hdr->m_item_write_cursor + (u64)sizeof(stream_item_t) + (u64)size > DSTREAM_MAX_FILESIZE)
+        for (s8 i = 0; i < byte_count; i++)
         {
-            hdr->m_item_write_cursor = DSTREAM_MAX_FILESIZE;
+            dest[i] = (u8)(value & 0xFF);
+            value >>= 8;
+        }
+        return dest + byte_count;
+    }
+
+    static u8* stream_write_u32_le(u8* dest, u32 value, s8 byte_count)
+    {
+        for (s8 i = 0; i < byte_count; i++)
+        {
+            dest[i] = (u8)(value & 0xFF);
+            value >>= 8;
+        }
+        return dest + byte_count;
+    }
+
+    static u8* stream_write_u16_le(u8* dest, u16 value)
+    {
+        dest[0] = (u8)(value & 0xFF);
+        dest[1] = (u8)((value >> 8) & 0xFF);
+        return dest + 2;
+    }
+
+    static u8* stream_write_data(u8* dest, const u8* data, u32 size)
+    {
+        memcpy(dest, data, size);
+        return dest + size;
+    }
+
+    bool stream_write_data(stream_manager_t* m, stream_id_t stream_id, u64 time, const u8* data, u32 size)
+    {
+        // Make sure the stream identified by stream_id is of type c_stream_type_fixed_data
+        const stream_id_info_t info = s_decode_stream_id(stream_id);
+        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != c_stream_type_fixed_data || size > m->m_rw_streams[info.m_stream_index]->m_sizeof_item)
+        {
             return false;
         }
 
-        // Check item capacity
-        if (hdr->m_item_count >= hdr->m_item_capacity)
+        // Write data to the stream identified by stream_id at the given time
+        u8* stream_ptr = (u8*)m->m_rw_streams[info.m_stream_index] + m->m_rw_streams[info.m_stream_index]->m_write_cursor;
+        u64 rtime      = (u64)(time - m->m_rw_streams[info.m_stream_index]->m_time_begin);
+        stream_ptr     = stream_write_u64_le(stream_ptr, rtime, 5);
+        stream_ptr     = stream_write_data(stream_ptr, data, size);
+        m->m_rw_streams[info.m_stream_index]->m_write_cursor += (5 + size);
+        m->m_rw_streams[info.m_stream_index]->m_item_count += 1;
+        if (time > m->m_rw_streams[info.m_stream_index]->m_time_end)
         {
-            hdr->m_item_write_cursor = DSTREAM_MAX_FILESIZE;
-            return false;
+            m->m_rw_streams[info.m_stream_index]->m_time_end = time;
         }
-
-        u8*            base          = ctx->m_mmstream_base_rw;
-        const u32      item_offset   = (u32)(hdr->m_item_write_cursor);
-        stream_item_t* item          = (stream_item_t*)(base + item_offset);
-        u8*            item_data_ptr = (u8*)(base + item_offset + sizeof(stream_item_t));
-
-        if (hdr->m_item_count == 0)
-        {
-            // First item, set stream start time
-            hdr->m_time_begin = time;
-        }
-
-        // Find or add ID
-        i16 id_index = ctx->find_or_add_id(id);
-        if (id_index < 0)
-            return false;
-        ASSERT(id_index >= 0 && (u16)id_index < hdr->m_ids_count);
-
-        // Set item header
-        item->set_time(time - hdr->m_time_begin);
-        item->set_id_index((i16)id_index);
-
-        // Copy item data
-        memcpy(item_data_ptr, data, size);
-
-        // Update item offset array
-        ctx->m_item_offsets[hdr->m_item_count] = item_offset;
-
-        // Update header
-        hdr->m_item_count += 1;
-        hdr->m_item_write_cursor += (sizeof(stream_item_t) + size);
-
-        // Update stream end time
-        if (time > hdr->m_time_end)
-            hdr->m_time_end = time;
-
         return true;
     }
 
-    // Get item, item index is relative to iterator, this is technically a read-only operation.
-    bool stream_iterator_get_item(stream_iterator_t* iterator, u64 relative_item_index, u64& out_item_time, u64& out_item_id, const u8*& out_item_data, u32& out_item_size)
+    bool stream_write_u8(stream_manager_t* m, stream_id_t stream_id, u64 time, u8 value)
     {
-        if (iterator->m_max_item_index >= 0)
+        const stream_id_info_t info = s_decode_stream_id(stream_id);
+        // Make sure the stream identified by stream_id is of type c_stream_type_fixed_u8
+        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != c_stream_type_fixed_u8)
         {
-            const u64 absolute_item_index = (u64)iterator->m_cur_item_index + relative_item_index;
-
-            const stream_context_t* ctx = iterator->m_stream_context;
-            const stream_header_t*  hdr = (ctx->m_header_ro != nullptr) ? ctx->m_header_ro : ctx->m_header;
-            if (hdr != nullptr && absolute_item_index < (u64)hdr->m_item_count)
-            {
-                const u32            item_offset = ctx->m_item_offsets_ro[absolute_item_index];
-                const u8*            item_ptr    = ctx->m_mmstream_base_ro + item_offset;
-                const u8*            item_data   = item_ptr + sizeof(stream_item_t);
-                const stream_item_t* header      = (stream_item_t*)item_ptr;
-
-                out_item_time      = header->get_time(hdr->m_time_begin);
-                const u16 id_index = header->get_id_index();
-                out_item_id        = ctx->m_ids_array_unsorted_ro[id_index];
-
-                if ((absolute_item_index + 1) < (u64)hdr->m_item_count)
-                {
-                    const u32 next_item_offset = ctx->m_item_offsets_ro[absolute_item_index + 1];
-                    out_item_size              = (next_item_offset - item_offset) - sizeof(stream_item_t);
-                }
-                else
-                {
-                    out_item_size = (hdr->m_item_write_cursor - item_offset) - sizeof(stream_item_t);
-                }
-
-                out_item_data = item_data;
-                return true;
-            }
+            return false;
         }
 
-        out_item_time = 0;
-        out_item_id   = 0;
-        out_item_data = nullptr;
-        out_item_size = 0;
-        return false;
+        // Write a u8 value to the stream identified by stream_id at the given time
+        u8* stream_ptr = (u8*)m->m_rw_streams[info.m_stream_index] + m->m_rw_streams[info.m_stream_index]->m_write_cursor;
+        u64 rtime      = (u64)(time - m->m_rw_streams[info.m_stream_index]->m_time_begin);
+        stream_ptr     = stream_write_u64_le(stream_ptr, rtime, 5);
+        stream_ptr[0]  = value;
+        m->m_rw_streams[info.m_stream_index]->m_write_cursor += (5 + 1);
+        m->m_rw_streams[info.m_stream_index]->m_item_count += 1;
+        if (time > m->m_rw_streams[info.m_stream_index]->m_time_end)
+        {
+            m->m_rw_streams[info.m_stream_index]->m_time_end = time;
+        }
+        return true;
+    }
+
+    bool stream_write_u16(stream_manager_t* m, stream_id_t stream_id, u64 time, u16 value)
+    {
+        const stream_id_info_t info = s_decode_stream_id(stream_id);
+
+        // Make sure the stream identified by stream_id is of type c_stream_type_fixed_u16
+        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != c_stream_type_fixed_u16)
+        {
+            return false;
+        }
+
+        // Write a u16 value to the stream identified by stream_id at the given time
+        u8* stream_ptr = (u8*)m->m_rw_streams[info.m_stream_index] + m->m_rw_streams[info.m_stream_index]->m_write_cursor;
+        u64 rtime      = (u64)(time - m->m_rw_streams[info.m_stream_index]->m_time_begin);
+        stream_ptr     = stream_write_u64_le(stream_ptr, rtime, 5);
+        stream_ptr     = stream_write_u16_le(stream_ptr, value);
+        m->m_rw_streams[info.m_stream_index]->m_write_cursor += (5 + 2);
+        m->m_rw_streams[info.m_stream_index]->m_item_count += 1;
+        if (time > m->m_rw_streams[info.m_stream_index]->m_time_end)
+        {
+            m->m_rw_streams[info.m_stream_index]->m_time_end = time;
+        }
+        return true;
+    }
+
+    bool stream_time_range(stream_manager_t* m, stream_id_t stream_id, u64& out_time_begin, u64& out_time_end)
+    {
+        const stream_id_info_t info = s_decode_stream_id(stream_id);
+        if (info.m_stream_index >= m->m_num_ro_streams)
+            return false;
+        const stream_header_t* header = nullptr;
+        if (info.m_stream_mode == c_stream_mode_readwrite)
+        {
+            header = m->m_rw_streams[info.m_stream_index];
+        }
+        else if (info.m_stream_mode == c_stream_mode_readonly)
+        {
+            header = m->m_ro_streams[info.m_stream_index];
+        }
+        if (header != nullptr)
+        {
+            out_time_begin = header->m_time_begin;
+            out_time_end   = header->m_time_end;
+        }
+        return (header != nullptr);
+    }
+
+    i32 stream_read(stream_manager_t* m, stream_id_t stream_id, u64 item_index, u32 item_count, void const*& item_array, u32& item_size)
+    {
+        // Make sure the stream identified by stream_id is of type c_stream_type_fixed_data or c_stream_type_fixed_u8 or c_stream_type_fixed_u16
+        const stream_id_info_t info = s_decode_stream_id(stream_id);
+
+        const stream_header_t* header = nullptr;
+        if (info.m_stream_mode == c_stream_mode_readwrite)
+        {
+            header = m->m_rw_streams[info.m_stream_index];
+        }
+        else if (info.m_stream_mode == c_stream_mode_readonly)
+        {
+            header = m->m_ro_streams[info.m_stream_index];
+        }
+        else
+        {
+            return 0;
+        }
+
+
+
+        return 0;
     }
 
 }  // namespace ncore

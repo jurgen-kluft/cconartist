@@ -10,6 +10,26 @@ extern "C"
 {
 #endif
 
+    const char* sGeekOpenPropertyNames[] = {
+        "current",
+        "energy",
+        "ip",
+        "key",
+        "key1",
+        "key2",
+        "key3",
+        "keyLock",
+        "mac",
+        "messageId",
+        "online",
+        "power",
+        "ssid",
+        "type",
+        "version",
+        "voltage",
+        "wifiLock",
+    };
+
     ui_element_t* build_ui_element(const unsigned char* stream_data, ui_builder_t* ui_builder)
     {
         // GeekOpen packets are JSON, but we don't want to have a full blown JSON parser here, so we do it manually.
@@ -19,6 +39,14 @@ extern "C"
         // {"online":1}
         // {"messageId":"","key":0,"mac":"8CCE4E50AF57","voltage":225.415,"current":0,"power":0.102,"energy":0.028}
         // {"messageId":"","mac":"D48AFC3A53DE","type":"Zero-2","version":"2.1.2","wifiLock":0,"keyLock":0,"ip":"192.168.8.93","ssid":"OBNOSIS8","key1":0,"key3":0}
+
+        // To reduce stream data size, we can do the following:
+        // - Prebuild property name dictionary and we write out an 8 bit index instead of the full string
+        //   - We do need a full dictionary
+        // - Certain property values are converted to integer representation instead of string
+        //   - e.g. boolean values (0/1), integer values (e.g. voltage in 0.1V steps), IP address (4 bytes), MAC address (6 bytes)
+        // - Version strings can be converted to a 32 bit integer representation (e.g. major.minor.patch.build -> 8 bits each)
+        // - SSID strings can be stored as is, but limited to 32 bytes!
 
         stream_json_t* json_data = (stream_json_t*)stream_data;
 
