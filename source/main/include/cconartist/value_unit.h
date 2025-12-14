@@ -1,7 +1,7 @@
 #ifndef __CCONARTIST_DECODER_UNITS_H__
 #define __CCONARTIST_DECODER_UNITS_H__
 
-enum EUnit
+enum EValueUnit
 {
     // Temperature (0–2)
     UTemperature = 0,
@@ -122,6 +122,6 @@ enum EUnit
     UUnknown
 };
 
-const char* to_string(EUnit unit);
+const char* to_string(EValueUnit unit);
 
 #endif  // __CCONARTIST_DECODER_UNITS_H__

@@ -44,6 +44,7 @@ func GetPackage() *denv.Package {
 	// server application
 	cconartist_server := denv.SetupCppAppProjectForDesktop(mainpkg, "cconartist_server", "server")
 	cconartist_server.CopyToOutput("source/main/plugins", "*.dylib", "plugins")
+	cconartist_server.CopyToOutput("config", "*.json", "")
 	cconartist_server.AddDependency(mainlib)
 	cconartist_server.AddDependencies(cjsonpkg.GetMainLib())
 	cconartist_server.AddDependencies(cguiapppkg.GetMainLib())

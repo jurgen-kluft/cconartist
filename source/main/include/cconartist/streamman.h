@@ -9,12 +9,22 @@ namespace ncore
 {
     class alloc_t;
 
-    typedef s8          stream_type_t;
-    const stream_type_t c_stream_type_invalid       = -1;
-    const stream_type_t c_stream_type_fixed_u8      = 1;
-    const stream_type_t c_stream_type_fixed_u16     = 2;
-    const stream_type_t c_stream_type_fixed_data    = 3;
-    const stream_type_t c_stream_type_variable_data = 4;
+    namespace estream_type
+    {
+        typedef s8 enum_t;
+        enum
+        {
+            TypeInvalid  = -1,
+            TypeU8       = 0x01,
+            TypeU16      = 0x12,
+            TypeU32      = 0x24,
+            TypeF32      = 0x34,
+            TypeFixed    = 0x40,
+            TypeVariable = 0x50,
+        };
+    }  // namespace estreamtype
+
+    const i32 c_relative_time_byte_count = 5;  // Number of bytes used to store relative time in stream
 
     // Public API
 
@@ -24,8 +34,8 @@ namespace ncore
     void              stream_manager_flush(stream_manager_t* manager);
     void              stream_manager_update(stream_manager_t* manager);
 
-    typedef i32 stream_id_t;
-    stream_id_t stream_register(stream_manager_t* m, stream_type_t stream_type, const char* name, u64 user_id, u16 user_type, u64 file_size = 1 * cGB, u32 sizeof_item = 0);
+    typedef u32 stream_id_t;
+    stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, const char* name, u64 user_id, u64 file_size = 1 * cGB, u32 sizeof_item = 0);
 
     // Write to the stream, returns false if failed, check by calling stream_is_full() to see if stream is full
     bool stream_write_data(stream_manager_t* m, stream_id_t stream_id, u64 time, const u8* data, u32 size);
@@ -45,7 +55,8 @@ namespace ncore
     //    In a f32 data stream the item layout : [u8[5] time_offset, f32 value]
     //    In a fixed data stream the item layout : [u8[5] time_offset, u8[data_size] data]
     //    In a variable data stream the item layout : [u8[5] time_offset, u8[4] data_size, u8[data_size] data] (max item count to read is 1)
-    bool stream_time_range(stream_manager_t* m, stream_id_t stream_id, u64& out_time_begin, u64& out_time_end);
+    bool stream_time(stream_manager_t* m, stream_id_t stream_id, u64& out_time_begin, u64& out_time_end);
+    bool stream_info(stream_manager_t* m, stream_id_t stream_id, u64& out_user_id);
     i32  stream_read(stream_manager_t* m, stream_id_t stream_id, u64 item_index, u32 item_count, void const*& item_array, u32& item_size);
 
     // We also provide a general way to iterate over items in any stream, but this is the only way for variable size data streams.

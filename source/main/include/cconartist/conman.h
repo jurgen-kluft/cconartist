@@ -15,7 +15,7 @@ namespace ncore
         struct servers_t;  // Forward declaration
     }  // namespace nconartist
 
-    struct stream_context_t;
+    struct stream_manager_t;
 
     enum connection_type_t
     {
@@ -32,15 +32,15 @@ namespace ncore
     struct connection_info_t
     {
         nconartist::server_t   *m_server;         // Back reference to server
+        stream_manager_t       *m_stream_man;     // For streaming packets to disk
+        uint64_t                m_last_active;    // Timestamp of last activity
         uint8_t                 m_remote_ip[16];  // IPv4 or IPv6 octet representation
-        int                     m_remote_port;
-        int                     m_local_port;
-        connection_type_t       m_type;
-        connection_state_t      m_state;
-        uint64_t                m_last_active;
-        uv_tcp_t               *m_handle;       // For TCP
-        struct sockaddr_storage m_remote_addr;  // For UDP
-        stream_context_t       *m_stream_ctx;   // For streaming packets to disk
+        int                     m_remote_port;    // Remote port that the client is connecting from
+        int                     m_local_port;     // Local port that the server is listening on
+        connection_state_t      m_state;          // Connected or Disconnected
+        connection_type_t       m_type;           // TCP or UDP
+        uv_tcp_t               *m_handle;         // For TCP
+        struct sockaddr_storage m_remote_addr;    // For UDP
     };
 
     struct connection_manager_t

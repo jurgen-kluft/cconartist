@@ -1,4 +1,4 @@
-#include "cconartist/units.h"
+#include "cconartist/value_unit.h"
 
 static const char *sUnitsArray[] = {[UTemperature]         = "°C",
                                     [UFahrenheit]          = "°F",
@@ -81,7 +81,7 @@ static const char *sUnitsArray[] = {[UTemperature]         = "°C",
                                     [UMacAddress]          = "",
                                     [UUnknown]             = "Unknown"};
 
-const char *to_string(EUnit unit)
+const char *to_string(EValueUnit unit)
 {
     const int unitMapSize = sizeof(sUnitsArray) / sizeof(sUnitsArray[0]);
     if (unit >= 0 && unit < unitMapSize && sUnitsArray[unit] != nullptr)

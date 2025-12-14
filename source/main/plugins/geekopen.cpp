@@ -1,7 +1,8 @@
-#include "../cpp/units.cpp"
-#include "../cpp/sensor_types.cpp"
+#include "../cpp/value_unit.cpp"
+#include "../cpp/user_types.cpp"
 
 #include <string>
+#include <time.h>
 
 #include "decoder_interface.h"
 
@@ -10,179 +11,306 @@ extern "C"
 {
 #endif
 
-    const char* sGeekOpenPropertyNames[] = {
-        "current",
-        "energy",
-        "ip",
-        "key",
-        "key1",
-        "key2",
-        "key3",
-        "keyLock",
-        "mac",
-        "messageId",
-        "online",
-        "power",
-        "ssid",
-        "type",
-        "version",
-        "voltage",
-        "wifiLock",
+    // Examples:
+    // {"online":1}
+    // {"messageId":"","key":0,"mac":"8CCE4E50AF57","voltage":225.415,"current":0,"power":0.102,"energy":0.028}
+    // {"messageId":"","mac":"D48AFC3A53DE","type":"Zero-2","version":"2.1.2","wifiLock":0,"keyLock":0,"ip":"192.168.8.93","ssid":"OBNOSIS8","key1":0,"key3":0}
+
+    static inline const char* trim_whitespace(const char* begin, const char* end)
+    {
+        while (begin < end && (*begin == ' ' || *begin == '\n' || *begin == '\r' || *begin == '\t'))
+            begin++;
+        return begin;
+    }
+
+    struct json_property_t
+    {
+        const char* key_begin;
+        const char* key_end;
+        const char* value_begin;
+        const char* value_end;
     };
 
-    ui_element_t* build_ui_element(const unsigned char* stream_data, ui_builder_t* ui_builder)
+    // GeekOpen packets are JSON, but we don't want to have a full blown JSON parser here, so we do it manually.
+    // So in all observed cases they are flat JSON objects with string keys and either string or numeric values.
+    static int s_parse_json(const char* json, const char* json_end, json_property_t* properties, int max_properties)
     {
-        // GeekOpen packets are JSON, but we don't want to have a full blown JSON parser here, so we do it manually.
-        // So in all observed cases they are flat JSON objects with string keys and either string or numeric values.
-
-        // Examples:
-        // {"online":1}
-        // {"messageId":"","key":0,"mac":"8CCE4E50AF57","voltage":225.415,"current":0,"power":0.102,"energy":0.028}
-        // {"messageId":"","mac":"D48AFC3A53DE","type":"Zero-2","version":"2.1.2","wifiLock":0,"keyLock":0,"ip":"192.168.8.93","ssid":"OBNOSIS8","key1":0,"key3":0}
-
-        // To reduce stream data size, we can do the following:
-        // - Prebuild property name dictionary and we write out an 8 bit index instead of the full string
-        //   - We do need a full dictionary
-        // - Certain property values are converted to integer representation instead of string
-        //   - e.g. boolean values (0/1), integer values (e.g. voltage in 0.1V steps), IP address (4 bytes), MAC address (6 bytes)
-        // - Version strings can be converted to a 32 bit integer representation (e.g. major.minor.patch.build -> 8 bits each)
-        // - SSID strings can be stored as is, but limited to 32 bytes!
-
-        stream_json_t* json_data = (stream_json_t*)stream_data;
-
-        const unsigned char* ptr = stream_data + sizeof(stream_json_t);
-        const unsigned char* end = stream_data + sizeof(stream_json_t) + json_data->m_json_size;
-
-        while (ptr < end && (*ptr == ' ' || *ptr == '{'))
-            ptr++;
-
-        const int   max_properties = 32;
-        const char* key_begin[max_properties];
-        const char* key_end[max_properties];
-        const char* value_begin[max_properties];
-        const char* value_end[max_properties];
-        int         value_type[max_properties];  // 0 = string, 1 = integer, 2 = double, 3 = boolean, 4 = mac, 5 = ip, 6 = ssid, 7 = version, 8 = type
-
-        short count = 0;
-        while (ptr < end && *ptr != '}' && count < max_properties)
+        enum EParseState
         {
-            // Skip whitespace and quotes
-            while (ptr < end && (*ptr == ' ' || *ptr == '\"'))
-                ptr++;
+            StateExpectObjectStart,
+            StateExpectKeyOrObjectEnd,
+            StateExpectColon,
+            StateExpectValue,
+            StateExpectCommaOrObjectEnd,
+        };
 
-            // Parse key
-            const unsigned char* key_start = ptr;
-            while (ptr < end && *ptr != '\"')
-                ptr++;
-            uint32_t key_len = (uint32_t)(ptr - key_start);
+        EParseState state          = StateExpectObjectStart;
+        int         property_count = 0;
+        const char* p              = json;
 
-            key_begin[count] = (const char*)key_start;
-            key_end[count]   = (const char*)(key_start + key_len);
-
-            while (ptr < end && *ptr != ':')
-                ptr++;
-            ptr++;  // skip ':'
-
-            while (ptr < end && (*ptr == ' '))
-                ptr++;
-
-            // Parse value
-            int         value_type_id = 0;  // default to string
-            const char* val_str_begin = nullptr;
-            const char* val_str_end   = nullptr;
-
-            if (*ptr == '\"')
+        while (p < json_end)
+        {
+            switch (state)
             {
-                // String value
-                ptr++;
-                const unsigned char* value_start = ptr;
-                while (ptr < end && *ptr != '\"')
-                    ptr++;
-                uint32_t value_len = (uint32_t)(ptr - value_start);
-
-                val_str_begin = (const char*)value_start;
-                val_str_end   = (const char*)(value_start + value_len);
-
-                ptr++;  // skip closing quote
-            }
-            else
-            {
-                // Numeric or boolean
-                const unsigned char* value_start = ptr;
-                while (ptr < end && *ptr != ',' && *ptr != '}')
-                    ptr++;
-                uint32_t value_len = (uint32_t)(ptr - value_start);
-
-                val_str_begin = (const char*)value_start;
-                val_str_end   = (const char*)(value_start + value_len);
-
-                // Determine if boolean, integer or double
-                if (value_len == 1 && (val_str_begin[0] == '0' || val_str_begin[0] == '1'))
+                case StateExpectObjectStart:
                 {
-                    value_type_id = 3;  // boolean
-                }
-                else
-                {
-                    bool is_double = false;
-                    for (uint32_t i = 0; i < value_len; i++)
+                    p = trim_whitespace(p, json_end);
+                    if (*p == '{')
                     {
-                        if (val_str_begin[i] == '.')
+                        state = StateExpectKeyOrObjectEnd;
+                    }
+                    p++;
+                    break;
+                }
+
+                case StateExpectKeyOrObjectEnd:
+                {
+                    p = trim_whitespace(p, json_end);
+                    if (*p == '}')
+                    {
+                        return property_count;  // End of object
+                    }
+                    else if (*p == '"')
+                    {
+                        // Parse key
+                        const char* key_begin = p + 1;
+                        p++;
+                        while (p < json_end && *p != '"')
+                            p++;
+                        const char* key_end = p;
+                        p++;
+
+                        // Store key
+                        if (property_count < max_properties)
                         {
-                            is_double = true;
-                            break;
+                            properties[property_count].key_begin = key_begin;
+                            properties[property_count].key_end   = key_end;
+                            state                                = StateExpectColon;
+                        }
+                        else
+                        {
+                            return property_count;  // Max properties reached
                         }
                     }
-                    value_type_id = is_double ? 2 : 1;  // double or integer
+                    else
+                    {
+                        p++;
+                    }
+                    break;
+                }
+
+                case StateExpectColon:
+                {
+                    // Consume white space until ':'
+                    p = trim_whitespace(p, json_end);
+                    if (*p == ':')
+                    {
+                        state = StateExpectValue;
+                    }
+                    p++;
+                    break;
+                }
+
+                case StateExpectValue:
+                {
+                    p                                      = trim_whitespace(p, json_end);
+                    properties[property_count].value_begin = p;
+                    if (*p == '"')
+                    {
+                        p++;  // Skip opening quote
+                        while (p < json_end && *p != '"')
+                            p++;
+                        properties[property_count].value_end = p;
+                        p++;  // Skip closing quote
+                    }
+                    else
+                    {
+                        while (p < json_end && *p != ',' && *p != '}')
+                            p++;
+                        properties[property_count].value_end = p;
+                    }
+                    property_count++;
+                    state = StateExpectCommaOrObjectEnd;
+                    break;
+                }
+                case StateExpectCommaOrObjectEnd:
+                {
+                    p = trim_whitespace(p, json_end);
+                    if (*p == ',')
+                    {
+                        state = StateExpectKeyOrObjectEnd;
+                    }
+                    else if (*p == '}')
+                    {
+                        return property_count;  // End of object
+                    }
+                    p++;
+                    break;
                 }
             }
-
-            value_begin[count] = val_str_begin;
-            value_end[count]   = val_str_end;
-            value_type[count]  = value_type_id;
-
-            count++;
-
-            // Skip comma
-            while (ptr < end && (*ptr == ',' || *ptr == ' '))
-                ptr++;
         }
+        return property_count;
+    }
+
+    decoder_ui_element_t* decoder_build_ui_element(decoder_context_t* ctx, const unsigned char* stream_data, unsigned int stream_data_size)
+    {
+        const int       max_properties = 64;
+        json_property_t properties[max_properties];
+        int             property_count = s_parse_json((const char*)stream_data, (const char*)stream_data + stream_data_size, properties, max_properties);
 
         // Setup UI elements
-        ui_element_t* ui_element = ui_builder->heap_allocate<ui_element_t>();
-        ui_element->m_count      = count;
-        ui_element->m_items      = ui_builder->heap_allocate_array<ui_item_t>(count);
+        decoder_ui_element_t* ui_element = ctx->m_ui_heap->_new<decoder_ui_element_t>();
+        ui_element->m_count              = property_count;
+        ui_element->m_items              = ctx->m_ui_heap->allocate_array<decoder_ui_item_t>(property_count);
         for (int i = 0; i < ui_element->m_count; i++)
         {
+            const char* key_begin   = properties[i].key_begin;
+            const char* key_end     = properties[i].key_end;
+            const char* value_begin = properties[i].value_begin;
+            const char* value_end   = properties[i].value_end;
+
             // Copy key
-            const uint32_t key_len = (uint32_t)(key_end[i] - key_begin[i]);
-            const char*    key_str = (char*)ui_builder->string_allocate(key_begin[i], key_len);
+            const uint32_t key_len = (uint32_t)(key_end - key_begin);
+            const char*    key_str = (char*)ctx->m_ui_heap->string_allocate(key_begin, key_len);
 
             // Copy value
-            const uint32_t value_len = (uint32_t)(value_end[i] - value_begin[i]);
-            const char*    value_str = (char*)ui_builder->string_allocate(value_begin[i], value_len);
-
-            ui_text_item_t* text_item = (ui_text_item_t*)&ui_element->m_items[i];
-            text_item->m_type         = UIItemText;
-            text_item->m_key_len      = key_len;
-            text_item->m_value_len    = value_len;
-            text_item->m_key          = key_str;
-            text_item->m_value        = value_str;
+            const uint32_t          value_len = (uint32_t)(value_end - value_begin);
+            const char*             value_str = (char*)ctx->m_ui_heap->string_allocate(value_begin, value_len);
+            decoder_ui_text_item_t* text_item = (decoder_ui_text_item_t*)&ui_element->m_items[i];
+            text_item->m_type                 = UIItemText;
+            text_item->m_key_len              = key_len;
+            text_item->m_value_len            = value_len;
+            text_item->m_key                  = key_str;
+            text_item->m_value                = value_str;
         }
 
         return ui_element;
     }
 
-    void* write_to_stream(connection_context_t* ctx, const unsigned char* stream_data, unsigned int packet_size)
+    void decoder_write_to_stream(decoder_context_t* ctx, const unsigned char* stream_data, unsigned int stream_data_size)
     {
-        // For GeekOpen we write the raw JSON data as is to the stream that is coupled with the GeekOpen TCP server.
-        unsigned char* stream_data_ptr = ctx->m_connection_interface->stream_allocate(sizeof(stream_json_t) + packet_size);
-        if (stream_data_ptr == nullptr)
-            return nullptr;
-        stream_json_t* json_data = (stream_json_t*)stream_data_ptr;
-        json_data->m_json_size   = packet_size;
-        memcpy(stream_data_ptr + sizeof(stream_json_t), stream_data, packet_size);
-        return stream_data_ptr;
+        const int       max_properties = 64;
+        json_property_t properties[max_properties];
+        int             property_count = 0;
+
+        if (ctx->m_user_context0 == nullptr)
+        {
+            property_count = s_parse_json((const char*)stream_data, (const char*)stream_data + stream_data_size, properties, max_properties);
+
+            // Is there a MAC address property?
+            for (int i = 0; i < property_count; i++)
+            {
+                const char* key_begin = properties[i].key_begin;
+                const char* key_end   = properties[i].key_end;
+                uint32_t    key_len   = (uint32_t)(key_end - key_begin);
+                if (key_len == 3 && strncmp(key_begin, "mac", 3) == 0)
+                {
+                    const char* mac_value     = properties[i].value_begin + 1;  // Skip opening quote
+                    uint32_t    mac_value_len = (uint32_t)(properties[i].value_end - properties[i].value_begin);
+                    uint64_t    user_id       = 0;
+                    // Parse MAC address into uint64_t user_id
+                    for (uint32_t j = 0; j < mac_value_len; j++)
+                    {
+                        char c = mac_value[j];
+                        user_id <<= 4;
+                        if (c >= '0' && c <= '9')
+                            user_id |= (uint64_t)(c - '0');
+                        else if (c >= 'A' && c <= 'F')
+                            user_id |= (uint64_t)(c - 'A' + 10);
+                        else if (c >= 'a' && c <= 'f')
+                            user_id |= (uint64_t)(c - 'a' + 10);
+                    }
+                    ctx->m_user_context0 = (void*)user_id;
+                    break;
+                }
+            }
+        }
+
+        if (ctx->m_user_context0 != nullptr)
+        {
+            // For GeekOpen we write the raw JSON data as is to the stream that is coupled with the GeekOpen TCP server.
+            uint64_t user_id   = (uint64_t)(ctx->m_user_context0);
+            uint64_t data_time = (uint64_t)time(nullptr) * 1000;  // Current time in milliseconds
+            ctx->m_stream->write_fix_data((user_id << 16) | ID_JSON, data_time, stream_data, stream_data_size);
+
+            // Here we also parse properties that we are interested in as sensor data.
+            // e.g.:
+            //   - voltage, current, power, energy
+            //   - key/key1/key2/key3 (on/off)
+            if (property_count == 0)
+            {
+                property_count = s_parse_json((const char*)stream_data, (const char*)stream_data + stream_data_size, properties, max_properties);
+            }
+
+            for (int i = 0; i < property_count; i++)
+            {
+                const char* key_begin   = properties[i].key_begin;
+                const char* key_end     = properties[i].key_end;
+                const char* value_begin = properties[i].value_begin;
+                const char* value_end   = properties[i].value_end;
+
+                uint32_t key_len = (uint32_t)(key_end - key_begin);
+
+                // Voltage
+                if (key_len == 7 && strncmp(key_begin, "voltage", 7) == 0)
+                {
+                    float voltage = strtof(value_begin, nullptr);
+                    ctx->m_stream->write_f32((user_id << 16) | ID_VOLTAGE, data_time, voltage);
+                }
+                // Current
+                else if (key_len == 7 && strncmp(key_begin, "current", 7) == 0)
+                {
+                    float current = strtof(value_begin, nullptr);
+                    ctx->m_stream->write_f32((user_id << 16) | ID_CURRENT, data_time, current);
+                }
+                // Power
+                else if (key_len == 5 && strncmp(key_begin, "power", 5) == 0)
+                {
+                    float power = strtof(value_begin, nullptr);
+                    ctx->m_stream->write_f32((user_id << 16) | ID_POWER, data_time, power);
+                }
+                // Energy
+                else if (key_len == 6 && strncmp(key_begin, "energy", 6) == 0)
+                {
+                    double energy = strtod(value_begin, nullptr);
+                    ctx->m_stream->write_f64((user_id << 16) | ID_ENERGY, data_time, energy);
+                }
+                // Key / Key1 / Key2 / Key3
+                else
+                {
+                    // const uint32_t keyn = 0x0079656B; // "key"
+                    // const uint32_t key0 = 0x3079656B; // "key0"
+                    // const uint32_t key1 = 0x3179656B; // "key1"
+                    // const uint32_t key2 = 0x3279656B; // "key2"
+                    // const uint32_t key3 = 0x3379656B; // "key3"
+
+                    // Be aware of little endian representation of uint32_t
+                    const uint32_t key32 = *(const uint32_t*)key_begin;
+                    if ((key32 & 0x00FFFFFF) == 0x0079656B)  // "key", "key0", "key1", "key2", "key3", ...
+                    {
+                        int switch_index = (key32 >> 24) & 0x0F;  // 0 for "key", 1 for "key1", etc.
+                        if (switch_index == 0)
+                            switch_index = 1;
+                        const uint64_t user_type_switch = (uint64_t)(ID_SWITCH + (switch_index - 1));
+                        // Parse value as integer
+                        uint8_t key_value = 0;
+                        if (value_end > value_begin)
+                        {
+                            if (*value_begin == '1' || *value_begin == 't' || *value_begin == 'T')
+                                key_value = 1;
+                        }
+                        ctx->m_stream->write_u8((user_id << 16) | user_type_switch, data_time, key_value);
+                    }
+                }
+            }
+        }
     }
+
+    void decoder_initialize(decoder_context_t *ctx)
+    {
+
+    }
+
 
 #ifdef __cplusplus
 }

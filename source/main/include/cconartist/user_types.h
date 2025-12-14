@@ -1,9 +1,10 @@
-#ifndef __CCONARTIST_DECODER_SENSOR_TYPE_H__
-#define __CCONARTIST_DECODER_SENSOR_TYPE_H__
+#ifndef __CCONARTIST_DECODER_USER_TYPE_H__
+#define __CCONARTIST_DECODER_USER_TYPE_H__
 
-#include "cconartist/units.h"
+#include "cconartist/value_type.h"
+#include "cconartist/value_unit.h"
 
-enum ESensorType
+enum EUserType
 {
     ID_UNKNOWN     = 0,   // Unknown
     ID_TEMPERATURE = 1,   // Temperature
@@ -26,6 +27,7 @@ enum ESensorType
     ID_STATE       = 18,  // State
     ID_BATTERY     = 19,  // Battery
     ID_SWITCH      = 21,  // On/Off, Open/Close
+    ID_SWITCH1     = 21,  // On/Off, Open/Close (same as ID_SWITCH)
     ID_SWITCH2     = 22,  // On/Off, Open/Close
     ID_SWITCH3     = 23,  // On/Off, Open/Close
     ID_SWITCH4     = 24,  // On/Off, Open/Close
@@ -50,10 +52,16 @@ enum ESensorType
     ID_CURRENT     = 46,  // Current
     ID_POWER       = 47,  // Power
     ID_ENERGY      = 48,  // Energy
-    ID_SENSORCOUNT,       // The maximum number of sensor types (highest index + 1)
+    ID_SENSOR      = 49,  // Sensor
+    ID_JSON        = 50,  // JSON Data
+    ID_IMAGE       = 51,  // Image Data
+    ID_COUNT,             // The maximum number of user id's (highest index + 1)
 };
 
-const char* to_string(ESensorType type);
-EUnit       get_unit(ESensorType type);
+const char* ui_string(EUserType type); // UI readable string
+const char* key_string(EUserType type); // Key string for serialization / deserialization
+EUserType   from_string(const char* key_str); // Get EUserType from key string
+EValueType  get_value_type(EUserType type);
+EValueUnit  get_value_unit(EUserType type);
 
-#endif  // __CCONARTIST_DECODER_SENSOR_TYPE_H__
+#endif  // __CCONARTIST_DECODER_USER_TYPE_H__
