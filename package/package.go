@@ -1,8 +1,8 @@
 package cconartist
 
 import (
+	cbase "github.com/jurgen-kluft/cbase/package"
 	"github.com/jurgen-kluft/ccode/denv"
-	ccore "github.com/jurgen-kluft/ccore/package"
 	cgui "github.com/jurgen-kluft/cgui/package"
 	cjson "github.com/jurgen-kluft/cjson/package"
 	clibuv "github.com/jurgen-kluft/clibuv/package"
@@ -19,7 +19,7 @@ func GetPackage() *denv.Package {
 	name := repo_name
 
 	// dependencies
-	ccorepkg := ccore.GetPackage()
+	cbasepkg := cbase.GetPackage()
 	clibuvpkg := clibuv.GetPackage()
 	cmmiopkg := cmmio.GetPackage()
 	cguiapppkg := cgui.GetPackage()
@@ -28,7 +28,7 @@ func GetPackage() *denv.Package {
 
 	// main package
 	mainpkg := denv.NewPackage(repo_path, repo_name)
-	mainpkg.AddPackage(ccorepkg)
+	mainpkg.AddPackage(cbasepkg)
 	mainpkg.AddPackage(clibuvpkg)
 	mainpkg.AddPackage(cmmiopkg)
 	mainpkg.AddPackage(cguiapppkg)
@@ -37,7 +37,7 @@ func GetPackage() *denv.Package {
 
 	// main library
 	mainlib := denv.SetupCppLibProject(mainpkg, name)
-	mainlib.AddDependencies(ccorepkg.GetMainLib())
+	mainlib.AddDependencies(cbasepkg.GetMainLib())
 	mainlib.AddDependencies(clibuvpkg.GetMainLib())
 	mainlib.AddDependencies(cmmiopkg.GetMainLib())
 
@@ -58,7 +58,7 @@ func GetPackage() *denv.Package {
 
 	// test library
 	testlib := denv.SetupCppTestLibProject(mainpkg, name)
-	testlib.AddDependencies(ccorepkg.GetTestLib())
+	testlib.AddDependencies(cbasepkg.GetTestLib())
 	testlib.AddDependencies(clibuvpkg.GetTestLib())
 	testlib.AddDependencies(cmmiopkg.GetTestLib())
 	testlib.AddDependencies(cunittestpkg.GetTestLib())

@@ -13,17 +13,17 @@ namespace ncore
 
     enum EServerType
     {
-        cServerTypeTcp = 1,
-        cServerTypeUdp = 2,
+        cServerTypeTcp = 'T',
+        cServerTypeUdp = 'U',
     };
 
     struct config_server_t
     {
         const char*  m_name;
-        u16          m_type;
+        u8           m_type;
         u16          m_port;
-        ncore::s32   m_nb_encoders;  // number of encoders
-        const char** m_encoders;     // array of encoder names
+        ncore::s32   m_nb_decoders;  // number of decoders
+        const char** m_decoders;     // array of decoder names
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
@@ -32,8 +32,8 @@ namespace ncore
     {
         const char* m_name;
         u64         m_user_id;
-        u16         m_user_type;    // enum EUserType
-        u16         m_stream_type;  // type stream_type_t
+        u8          m_user_type;    // enum EUserType
+        u8          m_stream_type;  // type stream_type_t
         u32         m_data_size;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
@@ -42,8 +42,8 @@ namespace ncore
     struct config_main_t
     {
         i32              m_num_servers;
-        config_server_t* m_servers;
         i32              m_num_streams;
+        config_server_t* m_servers;
         config_stream_t* m_streams;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE

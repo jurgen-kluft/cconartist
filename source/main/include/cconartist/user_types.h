@@ -58,9 +58,16 @@ enum EUserType
     ID_COUNT,             // The maximum number of user id's (highest index + 1)
 };
 
-const char* ui_string(EUserType type); // UI readable string
-const char* key_string(EUserType type); // Key string for serialization / deserialization
-EUserType   from_string(const char* key_str); // Get EUserType from key string
+// Note: array string array is sorted
+const unsigned char* get_user_type_type_array();
+const char**         get_user_type_key_string_array();
+const char**         get_user_type_ui_string_array();
+const short*         get_user_type_to_index_array();
+
+const char* to_ui_string(EUserType type);                               // UI readable string
+const char* to_key_string(EUserType type);                              // Key string for serialization / deserialization
+EUserType   from_string(const char* key_str);                           // Get EUserType from key string
+EUserType   from_string(const char* key_str, const char* key_str_end);  // Get EUserType from key string
 EValueType  get_value_type(EUserType type);
 EValueUnit  get_value_unit(EUserType type);
 

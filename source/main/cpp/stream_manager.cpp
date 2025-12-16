@@ -1,8 +1,11 @@
 #include "ccore/c_allocator.h"
 #include "ccore/c_math.h"
 #include "ccore/c_memory.h"
+#include "ccore/c_vmem.h"
+#include "cbase/c_runes.h"
 
-#include "cconartist/streamman.h"
+#include "cconartist/stream_manager.h"
+#include "cconartist/channel.h"
 
 #include "cmmio/c_mmio.h"
 
@@ -79,6 +82,7 @@ namespace ncore
         i32                     m_num_rw_streams;
         i32                     m_max_rw_streams;
         char**                  m_rw_stream_filepaths;
+        void**                  m_rw_stream_memory;
         nmmio::mappedfile_t**   m_rw_stream_files;
         stream_header_t**       m_rw_streams;
 
@@ -308,6 +312,15 @@ namespace ncore
         //    We can do this by 'closing' the stream, and opening it again with a larger size.
         // Using m_time_begin and m_time_end together with m_item_count we can determine the throughput
         // and determine how many days a stream still has to go before it should be extended in size.
+
+        // Check the stream request channel for any completed stream requests and process them.
+        // A completed stream request provides us with an opened mmapped file that we can use
+        // to back the read-write stream instead of the memory stream we have been using so far.
+        // - Copy the memory stream contents to the mmapped file
+        // - Update the stream header in the stream manager
+        // - Update the filename of the read-write stream in the stream manager
+        // - Deallocate the memory stream and set its pointer to nullptr
+        // - Set the mapped file pointer in the stream manager
     }
 
     void stream_manager_destroy(alloc_t* allocator, stream_manager_t*& manager)
@@ -352,8 +365,30 @@ namespace ncore
 
         g_destruct(allocator, manager);
     }
-    stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, const char* name, u64 user_id, u64 file_size, u32 sizeof_item)
+
+    stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, u64 user_id)
     {
+        // Check if there is already a read-write stream for this user_id and stream_type
+        for (i32 i = 0; i < m->m_num_rw_streams; i++)
+        {
+            stream_header_t* header = m->m_rw_streams[i];
+            if (header->m_user_id == user_id && header->m_stream_type == (u16)stream_type)
+            {
+                // Return existing stream_id
+                stream_id_info_t info;
+                info.m_stream_type  = stream_type;
+                info.m_stream_mode  = estream_mode::readwrite;
+                info.m_stream_index = (u16)i;
+                return s_encode_stream_id(info);
+            }
+        }
+
+        // Schedule a stream request, and create the entry for the stream id. However
+        // the stream initially will be be memory stream until we receive back the
+        // stream request that will give us the mmapped file to use for the stream.
+        // We then write the current memory stream contents to the mmapped file and switch
+        // over to using that file for further writes.
+
         // Create a new read-write stream and return its stream_id
         // Initialize m_time_begin and m_time_end to the current time
         stream_id_info_t info;
@@ -361,45 +396,77 @@ namespace ncore
         info.m_stream_mode  = estream_mode::readwrite;
         info.m_stream_index = (u16)m->m_num_rw_streams;
 
-        // Make sure there is enough space for the new stream
-        stream_manager_resize_rw(m);
-
         const u16 user_index = stream_manager_largest_user_index_for(m, user_id);
 
-        nmmio::mappedfile_t* mmfile_rw = nullptr;
-        nmmio::allocate(m->m_allocator, mmfile_rw);
-        char filepath[MAXPATHLEN];
-        snprintf(filepath, sizeof(filepath), "%s/%s.rwstream", m->m_base_path, name);
-        if (nmmio::create_rw(mmfile_rw, filepath, file_size))
-        {
-            // Initialize the stream header
-            stream_header_t* header = (stream_header_t*)nmmio::address_rw(mmfile_rw);
-            header->m_user_id       = user_id;
-            header->m_stream_type   = (u16)stream_type;
-            header->m_sizeof_item   = sizeof_item;
-            header->m_user_index    = user_index + 1;
-            header->m_reserved1     = 0;
-            header->m_reserved2     = 0;
-            header->m_time_begin    = (u64)time(nullptr);
-            header->m_stream_size   = file_size;
-            header->m_item_count    = 0;
-            header->m_time_end      = header->m_time_begin;
-            header->m_write_cursor  = sizeof(stream_header_t);
+        // Make sure there is enough space for the new rw stream
+        stream_manager_resize_rw(m);
 
-            // Register the read-write stream
-            m->m_rw_stream_filepaths[m->m_num_rw_streams] = g_allocate_array<char>(m->m_allocator, strlen(filepath) + 1);
-            strlcpy((char*)m->m_rw_stream_filepaths[m->m_num_rw_streams], filepath, strlen(filepath) + 1);
-            m->m_rw_stream_files[m->m_num_rw_streams] = mmfile_rw;
-            m->m_rw_streams[m->m_num_rw_streams]      = header;
-            m->m_num_rw_streams += 1;
-        }
-        else
-        {
-            nmmio::deallocate(m->m_allocator, mmfile_rw);
-        }
+        u8* memory_stream = g_allocate_array<u8>(m->m_allocator, 4 * 1024 * 1024);  // Start with 4 MB memory stream
+
+        // Initialize the stream header
+        stream_header_t* header = (stream_header_t*)memory_stream;
+        header->m_user_id       = user_id;
+        header->m_stream_type   = (u16)stream_type;
+        header->m_sizeof_item   = 0;  // Necessary ?
+        header->m_user_index    = user_index + 1;
+        header->m_reserved1     = 0;
+        header->m_reserved2     = 0;
+        header->m_time_begin    = (u64)time(nullptr);
+        header->m_stream_size   = 4 * 1024 * 1024;
+        header->m_item_count    = 0;
+        header->m_time_end      = header->m_time_begin;
+        header->m_write_cursor  = sizeof(stream_header_t);
+
+        // Register the read-write stream
+        m->m_rw_stream_filepaths[m->m_num_rw_streams] = nullptr;  // No filename yet
+        m->m_rw_stream_files[m->m_num_rw_streams]     = nullptr;  // Not yet mapped to a file
+        m->m_rw_stream_memory[m->m_num_rw_streams]    = memory_stream;
+        m->m_rw_streams[m->m_num_rw_streams]          = header;
+        m->m_num_rw_streams += 1;
 
         return s_encode_stream_id(info);
     }
+
+    //     const u16 user_index = stream_manager_largest_user_index_for(m, user_id);
+
+    //     const u64   file_size   = 16 * 1024 * 1024;  // Start with 16 MB for now
+    //     const char* name        = "test";
+    //     const u32   sizeof_item = sizeof(u8);
+
+    //     nmmio::mappedfile_t* mmfile_rw = nullptr;
+    //     nmmio::allocate(m->m_allocator, mmfile_rw);
+    //     char filepath[MAXPATHLEN];
+    //     snprintf(filepath, sizeof(filepath), "%s/%s.rwstream", m->m_base_path, name);
+    //     if (nmmio::create_rw(mmfile_rw, filepath, file_size))
+    //     {
+    //         // Initialize the stream header
+    //         stream_header_t* header = (stream_header_t*)nmmio::address_rw(mmfile_rw);
+    //         header->m_user_id       = user_id;
+    //         header->m_stream_type   = (u16)stream_type;
+    //         header->m_sizeof_item   = sizeof_item;
+    //         header->m_user_index    = user_index + 1;
+    //         header->m_reserved1     = 0;
+    //         header->m_reserved2     = 0;
+    //         header->m_time_begin    = (u64)time(nullptr);
+    //         header->m_stream_size   = file_size;
+    //         header->m_item_count    = 0;
+    //         header->m_time_end      = header->m_time_begin;
+    //         header->m_write_cursor  = sizeof(stream_header_t);
+
+    //         // Register the read-write stream
+    //         m->m_rw_stream_filepaths[m->m_num_rw_streams] = g_allocate_array<char>(m->m_allocator, strlen(filepath) + 1);
+    //         strlcpy((char*)m->m_rw_stream_filepaths[m->m_num_rw_streams], filepath, strlen(filepath) + 1);
+    //         m->m_rw_stream_files[m->m_num_rw_streams] = mmfile_rw;
+    //         m->m_rw_streams[m->m_num_rw_streams]      = header;
+    //         m->m_num_rw_streams += 1;
+    //     }
+    //     else
+    //     {
+    //         nmmio::deallocate(m->m_allocator, mmfile_rw);
+    //     }
+
+    //     return s_encode_stream_id(info);
+    // }
 
     static u8* stream_write_u64_le(u8* dest, u64 value, u8 byte_count)
     {
@@ -625,6 +692,198 @@ namespace ncore
         // TODO : implement reading from the stream
 
         return 0;
+    }
+
+    // We want a thread that can create new streams on disk, and we want this to be on a separate
+    // thread since we don't want to block the main event loop when creating new streams.
+    // It also monitors a specific file that contains mappings [id => name] and keeps
+    // reloading it when it changes on disk.
+    // When a new stream is requested, it creates the file on disk when the mapping exists.
+    // If possible, in the UI we do want to see the list of active stream requests, so we can know
+    // which streams to registers in the mapping file.
+    // The main event loop communicates by using a 'channel' to push a pointer to a stream request
+    // that contains the user-id, stream-id, and resulting mappedfile, and waits for a response on
+    // the receive channel for stream requests that have been processed.
+
+    struct stream_request_t
+    {
+        u64                  m_user_id;
+        stream_id_t          m_stream_id;
+        u64                  m_mmfile_size;
+        nmmio::mappedfile_t* m_mmfile;
+    };
+
+    struct stream_mapping_t
+    {
+        u64  m_id;
+        char m_name[256 - 8];
+    };
+
+    struct stream_thread_t
+    {
+        alloc_t*          m_allocator;
+        const char*       m_base_path;
+        channel_t*        m_channel_requests;   // <= channel of stream_request_t*
+        channel_t*        m_channel_responses;  // => channel of stream_request_t*
+        const char*       m_mappings_filepath;
+        struct stat       m_mappings_file_stat;
+        stream_mapping_t* m_mappings;
+        i32               m_mappings_size;
+        i32               m_mappings_capacity;
+        stream_request_t* m_active_requests;
+        i32               m_active_requests_size;
+        i32               m_active_requests_capacity;
+    };
+
+    void init_stream_thread(stream_thread_t* thread, alloc_t* allocator, const char* base_path, const char* mappings_filepath)
+    {
+        thread->m_allocator         = allocator;
+        thread->m_base_path         = g_duplicate_string(allocator, base_path);
+        thread->m_channel_requests  = channel_init(allocator, 1024);
+        thread->m_channel_responses = channel_init(allocator, 1024);
+        thread->m_mappings_filepath = g_duplicate_string(allocator, mappings_filepath);
+        thread->m_mappings_size     = 0;
+        thread->m_mappings_capacity = 1024;
+        thread->m_mappings          = g_allocate_array<stream_mapping_t>(allocator, thread->m_mappings_capacity);
+        memset(&thread->m_mappings_file_stat, 0, sizeof(struct stat));
+        thread->m_active_requests_size     = 0;
+        thread->m_active_requests_capacity = 256;
+        thread->m_active_requests          = g_allocate_array<stream_request_t>(allocator, thread->m_active_requests_capacity);
+    }
+
+    void shutdown_stream_thread(stream_thread_t* thread)
+    {
+        channel_destroy(thread->m_channel_requests);
+        channel_destroy(thread->m_channel_responses);
+        g_deallocate_string(thread->m_allocator, thread->m_base_path);
+        g_deallocate_string(thread->m_allocator, thread->m_mappings_filepath);
+        g_deallocate_array<stream_mapping_t>(thread->m_allocator, thread->m_mappings);
+        g_deallocate_array<stream_request_t>(thread->m_allocator, thread->m_active_requests);
+    }
+
+    void update_mappings(stream_thread_t* thread)
+    {
+        // Did the mappings file change on disk?
+        FILE* file = fopen(thread->m_mappings_filepath, "rb");
+        if (file != nullptr)
+        {
+            struct stat current_stat;
+            if (stat(thread->m_mappings_filepath, &current_stat) == 0)
+            {
+                if (current_stat.st_mtime != thread->m_mappings_file_stat.st_mtime)
+                {
+                    // File changed, reload
+                    fseek(file, 0, SEEK_END);
+                    size_t file_size = ftell(file);
+                    fseek(file, 0, SEEK_SET);
+
+                    thread->m_mappings_size = 0;
+
+                    char* file_content = g_allocate_array<char>(thread->m_allocator, file_size);
+                    fread(file_content, 1, file_size, file);
+
+                    // Parse the mappings, which are line based and each line is 'ID=filename'
+                    ncore::nrunes::reader_t reader(file_content, file_size);
+                    while (!reader.end())
+                    {
+                        crunes_t line = ncore::nrunes::read_line(&reader);
+                        crunes_t left, right;
+                        if (nrunes::selectLeftAndRightOf(line, '=', left, right))
+                        {
+                            stream_mapping_t* m = &thread->m_mappings[thread->m_mappings_size++];
+                            // left = ID, which is '001122334455' or '00:11:22:33:44:55' format
+                            m->m_id = nrunes::parse_mac(left);
+                            // right = filename, max 255-8 characters
+                            const u32 rlen = math::g_min((u32)(right.m_end - right.m_str), (u32)DARRAYSIZE(m->m_name) - 1);
+                            nmem::memcpy(m->m_name, right.m_ascii + right.m_str, rlen);
+                            m->m_name[rlen] = 0;
+                        }
+                    }
+                    thread->m_mappings_file_stat = current_stat;
+
+                    g_deallocate_array<char>(thread->m_allocator, file_content);
+                }
+            }
+            fclose(file);
+        }
+    }
+
+    stream_mapping_t* pop_known_request(stream_thread_t* thread, stream_request_t*& out_request)
+    {
+        for (i32 i = 0; i < thread->m_active_requests_size; i++)
+        {
+            stream_request_t* request = &thread->m_active_requests[i];
+
+            // Check if we have a mapping for this id
+            for (i32 j = 0; j < thread->m_mappings_size; j++)
+            {
+                if (thread->m_mappings[j].m_id == request->m_user_id)
+                {
+                    // Found a mapping
+                    // Remove from active requests
+                    thread->m_active_requests[i] = thread->m_active_requests[thread->m_active_requests_size - 1];
+                    thread->m_active_requests_size -= 1;
+                    out_request = request;
+                    return &thread->m_mappings[j];
+                }
+            }
+        }
+        out_request = nullptr;
+        return nullptr;
+    }
+
+    void stream_thread_function(void* arg)
+    {
+        stream_thread_t* thread = (stream_thread_t*)arg;
+
+        while (true)
+        {
+            if (thread->m_active_requests_size == 0)
+            {
+                stream_request_t* request                                   = nullptr;
+                request                                                     = (stream_request_t*)channel_pop(thread->m_channel_requests);
+                thread->m_active_requests[thread->m_active_requests_size++] = *request;
+            }
+            else
+            {
+                stream_request_t* request = nullptr;
+                request                   = (stream_request_t*)channel_pop_nowait(thread->m_channel_requests);
+                if (request != nullptr)
+                {
+                    thread->m_active_requests[thread->m_active_requests_size++] = *request;
+                }
+            }
+
+            update_mappings(thread);
+
+            stream_request_t* known_request;
+            stream_mapping_t* known_mapping = pop_known_request(thread, known_request);
+            while (known_mapping != nullptr)
+            {
+                // Create the stream file on disk
+                char filepath[MAXPATHLEN];
+                snprintf(filepath, sizeof(filepath), "%s/%s.rwstream", thread->m_base_path, known_mapping->m_name);
+
+                // Create the mapped file
+                nmmio::mappedfile_t* mmfile_rw = nullptr;
+                nmmio::allocate(thread->m_allocator, mmfile_rw);
+                if (nmmio::create_rw(mmfile_rw, filepath, known_request->m_mmfile_size))
+                {
+                    known_request->m_mmfile = mmfile_rw;
+                }
+                else
+                {
+                    nmmio::deallocate(thread->m_allocator, mmfile_rw);
+                    known_request->m_mmfile = nullptr;
+                }
+
+                // Failed or not, push the response back to the main thread
+                channel_push(thread->m_channel_responses, (void*)known_request);
+
+                // Check for more known requests
+                known_mapping = pop_known_request(thread, known_request);
+            }
+        }
     }
 
 }  // namespace ncore

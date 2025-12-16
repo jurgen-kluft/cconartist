@@ -20,7 +20,7 @@
 #include "cconartist/udp_send_pool.h"
 #include "cconartist/tcp_write_pool.h"
 #include "cconartist/decoder_plugins.h"
-#include "cconartist/streamman.h"
+#include "cconartist/stream_manager.h"
 #include "cconartist/config.h"
 
 #define INITIAL_CONN_CAPACITY 128
@@ -30,9 +30,6 @@ namespace ncore
 {
     namespace nconartist
     {
-        const int cTcpServerType = 0;
-        const int cUdpServerType = 1;
-
         struct servers_t;
 
         struct server_t

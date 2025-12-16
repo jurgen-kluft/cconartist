@@ -35,7 +35,7 @@ namespace ncore
     void              stream_manager_update(stream_manager_t* manager);
 
     typedef u32 stream_id_t;
-    stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, const char* name, u64 user_id, u64 file_size = 1 * cGB, u32 sizeof_item = 0);
+    stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, u64 user_id);
 
     // Write to the stream, returns false if failed, check by calling stream_is_full() to see if stream is full
     bool stream_write_data(stream_manager_t* m, stream_id_t stream_id, u64 time, const u8* data, u32 size);
