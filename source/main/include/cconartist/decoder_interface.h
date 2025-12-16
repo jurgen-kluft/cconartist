@@ -10,17 +10,19 @@ struct connection_context_t;
 // Image data is split into multiple packets for transmission
 struct image_packet_header_t
 {
-    unsigned char  m_mac[6];        // MAC address
-    unsigned char  m_signature[4];  // 'I','M','G', 4th byte is version
-    unsigned short m_image_type;    // 0 = JPEG, 1 = PNG
-    unsigned short m_image_bpp;
-    unsigned short m_image_width;
-    unsigned short m_image_height;
-    unsigned int   m_image_block_count;
-    unsigned int   m_image_block_index;
-    unsigned int   m_image_data_offset;
-    unsigned int   m_image_data_size;
-    unsigned int   m_image_total_size;
+    unsigned char  m_value_count;        // 1
+    unsigned char  m_version;            // version 1
+    unsigned char  m_mac[6];             // MAC address
+    unsigned char  m_id;                 // ID_IMAGE
+    unsigned char  m_image_type;         // 0 = JPEG, 1 = PNG
+    unsigned short m_image_bpp;          // Bits per pixel
+    unsigned short m_image_width;        // Width in pixels
+    unsigned short m_image_height;       // Height in pixels
+    unsigned int   m_image_block_count;  // The number of blocks for this image
+    unsigned int   m_image_block_index;  // The index of this block
+    unsigned int   m_image_data_offset;  // The offset of this block in the full image data
+    unsigned int   m_image_data_size;    // The size of this block
+    unsigned int   m_image_total_size;   // The total size of the image data
 };
 
 class decoder_allocator_t

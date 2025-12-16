@@ -13,15 +13,17 @@
 #include "ccore/c_allocator.h"
 
 #include "clibuv/uv.h"
+#include "cmmio/c_mmio.h"
 
-#include "cconartist/decoder_interface.h"
+#include "cconartist/config.h"
 #include "cconartist/conman.h"
 #include "cconartist/packet_pool.h"
 #include "cconartist/udp_send_pool.h"
 #include "cconartist/tcp_write_pool.h"
+#include "cconartist/decoder_interface.h"
 #include "cconartist/decoder_plugins.h"
 #include "cconartist/stream_manager.h"
-#include "cconartist/config.h"
+#include "cconartist/stream_request.h"
 
 #define INITIAL_CONN_CAPACITY 128
 #define PACKET_POOL_SIZE      1024
@@ -337,6 +339,22 @@ namespace ncore
         //     }
         // }
 
+        void on_prepare(uv_prepare_t *handle)
+        {
+            // Called once per loop iteration, before the I/O poll
+            (void)handle;
+            // Do lightweight work, metrics, scheduling, etc.
+            // Keep it fast to avoid delaying I/O polling
+            printf("[prepare] once-per-iteration\n");
+        }
+
+        void on_check(uv_check_t *handle)
+        {
+            // Called once per loop iteration, after the I/O poll
+            (void)handle;
+            // Good for tasks that depend on completed I/O
+        }
+
     }  // namespace nconartist
 }  // namespace ncore
 
@@ -358,12 +376,83 @@ public:
     virtual void  v_deallocate(void *ptr) override final { free(ptr); }
 };
 
+// --------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------
+// Decoder Interface
+
 class malloc_based_decoder_allocator_t : public decoder_allocator_t
 {
+public:
     malloc_based_decoder_allocator_t() {}
     virtual void *v_allocate(unsigned int size) override final { return malloc(size); }
     virtual void  v_deallocate(void *ptr) override final { free(ptr); }
 };
+
+class decoder_stream_interface_imp_t : public decoder_stream_interface_t
+{
+public:
+    stream_manager_t         *m_stream_manager;
+    stream_request_manager_t *m_request_manager;
+
+    virtual stream_id_t register_stream(uint64_t user_id);
+
+    virtual bool v_allocate_vardata(uint64_t user_id, uint64_t time, uint8_t *&data, uint32_t data_size)
+    {
+        // Implementation
+        return false;
+    }
+
+    virtual bool v_allocate_fixdata(uint64_t user_id, uint64_t time, uint8_t *&data, uint32_t data_size)
+    {
+        // Implementation
+        return false;
+    }
+
+    virtual void v_write_var_data(uint64_t user_id, uint64_t time, uint8_t const *data, uint32_t data_size)
+    {
+        // Implementation
+        return;
+    }
+
+    virtual void v_write_fix_data(uint64_t user_id, uint64_t time, uint8_t const *data, uint32_t data_size)
+    {
+        // Implementation
+        return;
+    }
+
+    virtual void v_write_u8(uint64_t user_id, uint64_t time, uint8_t value)
+    {
+        // Implementation
+        return;
+    }
+
+    virtual void v_write_u16(uint64_t user_id, uint64_t time, uint16_t value)
+    {
+        // Implementation
+        return;
+    }
+
+    virtual void v_write_u32(uint64_t user_id, uint64_t time, uint32_t value)
+    {
+        // Implementation
+        return;
+    }
+
+    virtual void v_write_f32(uint64_t user_id, uint64_t time, float value)
+    {
+        // Implementation
+        return;
+    }
+
+    virtual void v_write_f64(uint64_t user_id, uint64_t time, double value)
+    {
+        // Implementation
+        return;
+    }
+};
+
+// --------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------
 
 int main()
 {
@@ -402,12 +491,26 @@ int main()
 
     // TODO: Use ctui to create a simple terminal UI for monitoring connections showing basic info and stats
 
+    // Initialize and start the prepare handle
+    uv_prepare_t prepare;
+    uv_prepare_init(loop, &prepare);
+    uv_prepare_start(&prepare, ncore::nconartist::on_prepare);
+
+    // Initialize and start the check handle (optional)
+    uv_check_t check;
+    uv_check_init(loop, &check);
+    uv_check_start(&check, ncore::nconartist::on_check);
+
     uv_run(loop, UV_RUN_DEFAULT);
 
     connection_manager_destroy(&conn_mgr);
 
     send_pool_destroy(ctx.m_udp_send_pool);
     write_pool_destroy(ctx.m_tcp_write_pool);
+
+    uv_prepare_stop(&prepare);
+    uv_check_stop(&check);
+    uv_loop_close(loop);
 
     return 0;
 }
