@@ -303,7 +303,7 @@ namespace ncore
         }
     }
 
-    void stream_manager_update(stream_manager_t* manager)
+    void stream_manager_update(stream_manager_t* manager, f64 now)
     {
         // Check time since last update and skip if too soon
         //  - We only want to do this once in a while, e.g. once every day

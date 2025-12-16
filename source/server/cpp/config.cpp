@@ -23,7 +23,7 @@ namespace ncore
     static const u8                        stream_type_enum_values[] = {(u8)estream_type::TypeInvalid, estream_type::TypeU8, estream_type::TypeU16, estream_type::TypeU32, estream_type::TypeF32, estream_type::TypeFixed, estream_type::TypeVariable};
     static njson::ndecoder::decoder_enum_t json_stream_type_enum(stream_type_enum_strs, stream_type_enum_values, DARRAYSIZE(stream_type_enum_strs));
 
-    static njson::ndecoder::decoder_enum_t json_user_type_enum(get_user_type_key_string_array(), get_user_type_type_array(), (i32)ID_COUNT);
+    static njson::ndecoder::decoder_enum_t json_user_type_enum(get_user_type_key_string_array(), get_user_type_type_array(), (i32)nusertype::ID_COUNT);
 
     static void decode_config_server(njson::ndecoder::decoder_t* d, config_server_t* obj)
     {

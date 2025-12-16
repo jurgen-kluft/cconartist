@@ -21,8 +21,10 @@ namespace ncore
 {
     struct job_t
     {
-        void*    m_job_data;  // optional user data pointer
-        job_fn_t m_job_fn;    // function pointer to execute the job
+        i32      m_channel;    // channel index
+        job_fn_t m_job_fn;     // function pointer to execute the job
+        void*    m_job_data0;  // optional user data pointer 0
+        void*    m_job_data1;  // optional user data pointer 1
     };
 
     //------------------------------------------------------------------------------
@@ -63,25 +65,28 @@ namespace ncore
         }
 
         // Non-blocking push: returns 0 on success, -1 if full
-        i32 push(job_fn_t job_fn, void* job_data)
+        i32 push(i32 channel, job_fn_t job_fn, void* job_data0, void* job_data1)
         {
             if (m_count == m_capacity)
                 return -1;
-            m_buf[m_tail].m_job_fn   = job_fn;
-            m_buf[m_tail].m_job_data = job_data;
-            m_tail                   = (m_tail + 1) % m_capacity;
+            m_buf[m_tail].m_channel   = channel;
+            m_buf[m_tail].m_job_fn    = job_fn;
+            m_buf[m_tail].m_job_data0 = job_data0;
+            m_buf[m_tail].m_job_data1 = job_data1;
+            m_tail                    = (m_tail + 1) % m_capacity;
             m_count += 1;
             return 0;
         }
 
         // Non-blocking pop: returns 0 on success, -1 if empty
-        i32 pop(job_fn_t& job_fn, void*& job_data)
+        i32 pop(i32& channel, job_fn_t& job_fn, void*& job_data0, void*& job_data1)
         {
             if (m_count == 0)
                 return -1;
-            job_fn   = m_buf[m_head].m_job_fn;
-            job_data = m_buf[m_head].m_job_data;
-            m_head   = (m_head + 1) % m_capacity;
+            channel   = m_buf[m_head].m_channel;
+            job_fn    = m_buf[m_head].m_job_fn;
+            job_data0 = m_buf[m_head].m_job_data0;
+            m_head    = (m_head + 1) % m_capacity;
             m_count -= 1;
             return 0;
         }
@@ -99,26 +104,30 @@ namespace ncore
         alloc_t*     m_allocator;
         uv_thread_t* m_threads;
         i32          m_thread_count;
+        i32          m_max_channels;
+        i32          m_n_channels;
 
         // Synchronization
         uv_mutex_t m_mutex;
         uv_cond_t  m_has_jobs;        // signaled when pending has jobs
-        uv_cond_t  m_has_completed;   // signaled when completed has jobs
-        uv_cond_t  m_room_completed;  // signaled when producer pops from completed
+        uv_cond_t* m_has_completed;   // signaled when completed has jobs (per channel)
+        uv_cond_t* m_room_completed;  // signaled when producer pops from completed (per channel)
 
         volatile i32 m_stopping;    // 0->running, 1->stopping (drain or drop)
         i32          m_drain_mode;  // 1->drain pending; 0->drop pending immediately
 
         // Queues
-        ring_t m_pending;
-        ring_t m_completed;
+        ring_t  m_pending;
+        ring_t* m_completed;  // per-channel completed rings
 
         // Constructor
-        void intialize(alloc_t* allocator, i32 n_threads, i32 pending_capacity, i32 completed_capacity)
+        void intialize(alloc_t* allocator, i32 max_channels, i32 n_threads, i32 pending_capacity)
         {
             m_allocator    = allocator;
             m_threads      = NULL;
             m_thread_count = n_threads;
+            m_max_channels = max_channels;
+            m_n_channels   = 0;
             m_stopping     = 0;
             m_drain_mode   = 1;
 
@@ -126,20 +135,20 @@ namespace ncore
                 m_thread_count = 1;
             if (pending_capacity <= 0)
                 pending_capacity = 1;
-            if (completed_capacity <= 0)
-                completed_capacity = 1;
 
-            if (m_pending.init(allocator, pending_capacity) != 0 || m_completed.init(allocator, completed_capacity) != 0)
+            if (m_pending.init(allocator, pending_capacity) != 0)
             {
                 fprintf(stderr, "Failed to allocate rings.\n");
             }
 
+            m_completed      = g_allocate_array<ring_t>(allocator, max_channels);
+            m_has_completed  = g_allocate_array<uv_cond_t>(allocator, max_channels);
+            m_room_completed = g_allocate_array<uv_cond_t>(allocator, max_channels);
+
             uv_mutex_init(&m_mutex);
             uv_cond_init(&m_has_jobs);
-            uv_cond_init(&m_has_completed);
-            uv_cond_init(&m_room_completed);
 
-            m_threads = (uv_thread_t*)m_allocator->allocate(sizeof(uv_thread_t) * m_thread_count);
+            m_threads = g_allocate_array<uv_thread_t>(m_allocator, m_thread_count);
             if (!m_threads)
             {
                 fprintf(stderr, "Failed to allocate thread array.\n");
@@ -158,6 +167,23 @@ namespace ncore
             }
         }
 
+        job_channel_t init_channel(job_manager_t* jm, i32 completed_capacity)
+        {
+            if (completed_capacity <= 0)
+                completed_capacity = 1;
+            if (jm->m_n_channels >= jm->m_max_channels)
+                return (job_channel_t)-1;
+
+            job_channel_t channel = jm->m_n_channels++;
+            uv_cond_init(&m_has_completed[channel]);
+            uv_cond_init(&m_room_completed[channel]);
+            if (m_completed[channel].init(jm->m_allocator, completed_capacity) != 0)
+            {
+                fprintf(stderr, "Failed to allocate rings.\n");
+            }
+            return channel;
+        }
+
         // Destructor
         void shutdown()
         {
@@ -166,27 +192,31 @@ namespace ncore
 
             if (m_threads)
             {
-                free(m_threads);
+                m_allocator->deallocate(m_threads);
                 m_threads = NULL;
             }
 
             uv_cond_destroy(&m_has_jobs);
-            uv_cond_destroy(&m_has_completed);
-            uv_cond_destroy(&m_room_completed);
             uv_mutex_destroy(&m_mutex);
 
-            // If any jobs remain in completed queue, they are not deleted here to
-            // keep ownership with producer (the caller). Pop them and delete manually
-            // in your own shutdown path if needed.
             m_pending.destroy();
-            m_completed.destroy();
+
+            for (i32 i = 0; i < m_n_channels; ++i)
+            {
+                uv_cond_destroy(&m_has_completed[i]);
+                uv_cond_destroy(&m_room_completed[i]);
+                m_completed[i].destroy();
+            }
+            g_deallocate_array(m_allocator, m_has_completed);
+            g_deallocate_array(m_allocator, m_room_completed);
+            g_deallocate_array(m_allocator, m_completed);
         }
 
         // Submit a job into the pending ring (non-blocking).
         // Returns 0 on success, -1 if m_stopping or queue is full.
-        i32 submit(job_fn_t job_fn, void* job_data)
+        i32 submit(job_channel_t channel, job_fn_t job_fn, void* job_data0, void* job_data1)
         {
-            if (job_fn == NULL || job_data == NULL)
+            if (job_fn == NULL || job_data0 == NULL)
                 return -1;
 
             uv_mutex_lock(&m_mutex);
@@ -195,7 +225,7 @@ namespace ncore
                 uv_mutex_unlock(&m_mutex);
                 return -1;
             }
-            i32 rc = m_pending.push(job_fn, job_data);
+            i32 rc = m_pending.push(channel, job_fn, job_data0, job_data1);
             if (rc == 0)
             {
                 uv_cond_signal(&m_has_jobs);  // wake one worker
@@ -206,18 +236,16 @@ namespace ncore
 
         // Pop a completed job (non-blocking).
         // Returns 0 on success with *out set; -1 if none available.
-        i32 pop_completed(void*& job_data)
+        i32 pop_completed(job_channel_t channel, void*& job_data0, void*& job_data1)
         {
-            if (!job_data)
-                return -1;
-
             uv_mutex_lock(&m_mutex);
+            i32      channel_out;
             job_fn_t job_fn;
-            i32      rc = m_completed.pop(job_fn, job_data);
+            i32      rc = m_completed[channel].pop(channel_out, job_fn, job_data0, job_data1);
             if (rc == 0)
             {
                 // Make room for workers that may be waiting to push into completed
-                uv_cond_signal(&m_room_completed);
+                uv_cond_signal(&m_room_completed[channel]);
             }
             uv_mutex_unlock(&m_mutex);
             return rc;
@@ -226,12 +254,10 @@ namespace ncore
         // Optional: Pop a completed job, blocking until one is available
         // or until the manager is stopped and no more completions will arrive.
         // Returns 0 if popped; -1 if interrupted or no more items expected.
-        i32 pop_completed_wait(void*& job_data)
+        i32 pop_completed_wait(job_channel_t channel, void*& job_data0, void*& job_data1)
         {
-            if (!job_data)
-                return -1;
             uv_mutex_lock(&m_mutex);
-            while (m_completed.m_count == 0)
+            while (m_completed[channel].m_count == 0)
             {
                 if (m_stopping != 0 && m_pending.m_count == 0)
                 {
@@ -239,13 +265,14 @@ namespace ncore
                     uv_mutex_unlock(&m_mutex);
                     return -1;
                 }
-                uv_cond_wait(&m_has_completed, &m_mutex);
+                uv_cond_wait(&m_has_completed[channel], &m_mutex);
             }
+            i32      channel_out;
             job_fn_t job_fn;
-            i32      rc = m_completed.pop(job_fn, job_data);
+            i32      rc = m_completed[channel].pop(channel_out, job_fn, job_data0, job_data1);
             if (rc == 0)
             {
-                uv_cond_signal(&m_room_completed);
+                uv_cond_signal(&m_room_completed[channel]);
             }
             uv_mutex_unlock(&m_mutex);
             return rc;
@@ -277,8 +304,11 @@ namespace ncore
 
                 // Wake all workers and also any producer waiting for completions
                 uv_cond_broadcast(&m_has_jobs);
-                uv_cond_broadcast(&m_has_completed);
-                uv_cond_broadcast(&m_room_completed);
+                for (i32 i = 0; i < m_n_channels; ++i)
+                {
+                    uv_cond_broadcast(&m_has_completed[i]);
+                    uv_cond_broadcast(&m_room_completed[i]);
+                }
                 uv_mutex_unlock(&m_mutex);
 
                 // Join all worker m_threads
@@ -330,30 +360,32 @@ namespace ncore
                 }
 
                 // Pop one job from pending
-                void*    job_data = NULL;
+                i32      channel;
+                void*    job_data0 = NULL;
+                void*    job_data1 = NULL;
                 job_fn_t job_fn   = NULL;
-                m_pending.pop(job_fn, job_data);
+                m_pending.pop(channel, job_fn, job_data0, job_data1);
                 uv_mutex_unlock(&m_mutex);
 
                 // Execute outside lock
                 if (job_fn)
                 {
-                    job_fn(job_data);
+                    job_fn(job_data0, job_data1);
                 }
 
                 // Push into completed ring (may block if ring is full)
                 uv_mutex_lock(&m_mutex);
-                while (m_completed.m_count == m_completed.m_capacity)
+                while (m_completed[channel].m_count == m_completed[channel].m_capacity)
                 {
                     // Completed buffer full: wait until producer pops
                     // If stop with drop and no producer, this could block.
                     // We keep blocking to guarantee delivery of completed jobs.
-                    uv_cond_wait(&m_room_completed, &m_mutex);
+                    uv_cond_wait(&m_room_completed[channel], &m_mutex);
                 }
                 if (job_fn)
                 {
-                    m_completed.push(job_fn, job_data);
-                    uv_cond_signal(&m_has_completed);  // notify producer
+                    m_completed[channel].push(channel, job_fn, job_data0, job_data1);
+                    uv_cond_signal(&m_has_completed[channel]);  // notify producer
                 }
                 // Loop back for next job
             }
@@ -375,9 +407,9 @@ namespace ncore
         }
     };
 
-    void print_job_fn(void* job_data)
+    void print_job_fn(void* job_data0, void* job_data1)
     {
-        print_job_t* data = (print_job_t*)job_data;
+        print_job_t* data = (print_job_t*)job_data0;
         i32          id   = data->id;
         const char*  text = data->text;
         fprintf(stdout, "[Job %d] %s\n", id, (text ? text : "(null)"));
@@ -390,9 +422,12 @@ namespace ncore
     {
         alloc_t* allocator;
 
-        // 4 worker m_threads, pending ring capacity 32, completed ring capacity 32
+        // 4 maximum channels, 4 worker m_threads, pending ring capacity 32
         job_manager_t jm;
-        jm.intialize(allocator, 4, 32, 32);
+        jm.intialize(allocator, 4, 4, 32);
+
+        // channel 0, completed ring capacity 32
+        job_channel_t channel0 = jm.init_channel(&jm, 32);
 
         // Submit some jobs
         i32 i;
@@ -413,7 +448,7 @@ namespace ncore
                 }
                 job_data->text[k] = '\0';
 
-                i32 rc = jm.submit(print_job_fn, (void*)job_data);
+                i32 rc = jm.submit(channel0, print_job_fn, (void*)job_data, NULL);
                 if (rc != 0)
                 {
                     fprintf(stderr, "Submit failed for job %d\n", i);
@@ -431,13 +466,14 @@ namespace ncore
         i32 completed_total = 0;
         for (;;)
         {
-            void* done = NULL;
-            i32   rc   = jm.pop_completed(done);
-            if (rc == 0 && done)
+            void* done0 = NULL;
+            void* done1 = NULL;
+            i32   rc   = jm.pop_completed(channel0, done0, done1);
+            if (rc == 0 && done0)
             {
                 // In real code, inspect job result/state here.
                 // Our demo job just prints in execute(); we now own deletion.
-                print_job_t* pj = (print_job_t*)done;
+                print_job_t* pj = (print_job_t*)done0;
                 if (pj && pj->text)
                 {
                     free((void*)pj->text);
@@ -463,11 +499,11 @@ namespace ncore
         return 0;
     }
 
-    job_manager_t* create_job_manager(alloc_t* allocator, i32 n_threads, i32 pending_capacity, i32 completed_capacity)
+    job_manager_t* create_job_manager(alloc_t* allocator, i32 n_channels, i32 n_threads, i32 pending_capacity)
     {
         // Construct the job manager
         job_manager_t* jm = g_allocate<job_manager_t>(allocator);
-        jm->intialize(allocator, n_threads, pending_capacity, completed_capacity);
+        jm->intialize(allocator, n_channels, n_threads, pending_capacity);
         return jm;
     }
 
@@ -482,8 +518,9 @@ namespace ncore
         }
     }
 
-    i32 submit(job_manager_t* jm, job_fn_t job_fn, void* job_data) { return jm->submit(job_fn, job_data); }
-    i32 pop(job_manager_t* jm, void*& job_data) { return jm->pop_completed(job_data); }
-    i32 pop_wait(job_manager_t* jm, void*& job_data) { return jm->pop_completed_wait(job_data); }
+    job_channel_t init_channel(job_manager_t* jm, i32 completed_capacity) { return jm->init_channel(jm, completed_capacity); }
+    i32           push_job(job_manager_t* jm, job_channel_t channel, job_fn_t job_fn, void* job_data0, void* job_data1) { return jm->submit(channel, job_fn, job_data0, job_data1); }
+    i32           pop_job(job_manager_t* jm, job_channel_t channel, void*& job_data0, void*& job_data1) { return jm->pop_completed(channel, job_data0, job_data1); }
+    i32           pop_job_wait(job_manager_t* jm, job_channel_t channel, void*& job_data0, void*& job_data1) { return jm->pop_completed_wait(channel, job_data0, job_data1); }
 
 }  // namespace ncore

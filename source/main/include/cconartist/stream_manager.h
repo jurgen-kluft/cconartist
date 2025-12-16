@@ -5,26 +5,11 @@
 #    pragma once
 #endif
 
+#include "cconartist/types.h"
+
 namespace ncore
 {
     class alloc_t;
-
-    namespace estream_type
-    {
-        typedef s8 enum_t;
-        enum
-        {
-            TypeInvalid  = -1,
-            TypeU8       = 0x01,
-            TypeU16      = 0x12,
-            TypeU32      = 0x24,
-            TypeF32      = 0x34,
-            TypeFixed    = 0x40,
-            TypeVariable = 0x50,
-        };
-    }  // namespace estreamtype
-
-    const i32 c_relative_time_byte_count = 5;  // Number of bytes used to store relative time in stream
 
     // Public API
 
@@ -32,9 +17,8 @@ namespace ncore
     stream_manager_t* stream_manager_create(alloc_t* allocator, i32 max_streams, const char* base_path);
     void              stream_manager_destroy(alloc_t* allocator, stream_manager_t*& manager);
     void              stream_manager_flush(stream_manager_t* manager);
-    void              stream_manager_update(stream_manager_t* manager);
+    void              stream_manager_update(stream_manager_t* manager, f64 now); // main event loop call
 
-    typedef u32 stream_id_t;
     stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, u64 user_id);
 
     // Write to the stream, returns false if failed, check by calling stream_is_full() to see if stream is full

@@ -170,5 +170,10 @@ namespace ncore
             return nullptr;
         }
 
+        void        update_registry(registry_t *registry, f64 now)
+        {
+            // Currently nothing to do here, as we use fs_event to monitor changes
+        }
+
     }  // namespace nplugins
 }  // namespace ncore

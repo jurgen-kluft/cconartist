@@ -29,6 +29,7 @@ namespace ncore
         bool        load_plugin(registry_t *registry, const char *filename);
         bool        unload_plugin(registry_t *registry, const char *filename);
         plugin_t   *find_plugin(registry_t *registry, const char *name);
+        void        update_registry(registry_t *registry, f64 now);  // main event loop call
     }  // namespace nplugins
 }  // namespace ncore
 
