@@ -11,36 +11,31 @@ namespace ncore
 {
     namespace nconartist
     {
-        struct server_t;   // Forward declaration
-        struct servers_t;  // Forward declaration
+        struct server_tcp_t;  // Forward declaration
+        struct server_udp_t;  // Forward declaration
+        struct servers_t;     // Forward declaration
     }  // namespace nconartist
 
     struct stream_manager_t;
 
-    enum connection_type_t
-    {
-        CONN_TCP,
-        CONN_UDP
-    };
-
-    enum connection_state_t
-    {
-        STATE_CONNECTED,
-        STATE_DISCONNECTED
-    };
-
     struct connection_info_t
     {
-        nconartist::server_t   *m_server;         // Back reference to server
-        stream_manager_t       *m_stream_man;     // For streaming packets to disk
-        uint64_t                m_last_active;    // Timestamp of last activity
-        uint8_t                 m_remote_ip[16];  // IPv4 or IPv6 octet representation
-        int                     m_remote_port;    // Remote port that the client is connecting from
-        int                     m_local_port;     // Local port that the server is listening on
-        connection_state_t      m_state;          // Connected or Disconnected
-        connection_type_t       m_type;           // TCP or UDP
-        uv_tcp_t               *m_handle;         // For TCP
-        struct sockaddr_storage m_remote_addr;    // For UDP
+        nconartist::server_tcp_t *m_server;         // Back reference to server
+        uint64_t                  m_last_active;    // Timestamp of last activity
+        uint8_t                   m_remote_ip[16];  // IPv4 or IPv6 octet representation
+        u16                       m_remote_port;    // Remote port that the client is connecting from
+        u16                       m_local_port;     // Local port that the client is connecting to
+        uv_tcp_t                 *m_handle;         // For TCP
+        struct sockaddr_storage   m_remote_addr;    // For UDP
+        u8                        m_flags[4];
+        inline void               set_tcp() { m_flags[0] = 1; }
+        inline bool               is_tcp() const { return m_flags[0] == 1; }
+        inline void               set_udp() { m_flags[0] = 2; }
+        inline bool               is_udp() const { return m_flags[0] == 2; }
+        inline void               set_connected() { m_flags[1] = 1; }
+        inline bool               is_connected() const { return m_flags[1] == 1; }
+        inline void               set_disconnected() { m_flags[1] = 2; }
+        inline bool               is_disconnected() const { return m_flags[1] == 2; }
     };
 
     struct connection_manager_t

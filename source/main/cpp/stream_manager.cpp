@@ -5,6 +5,7 @@
 #include "cbase/c_runes.h"
 
 #include "cconartist/stream_manager.h"
+#include "cconartist/stream_id_registry.h"
 #include "cconartist/channel.h"
 
 #include "cmmio/c_mmio.h"
@@ -35,23 +36,8 @@ namespace ncore
         };
     }  // namespace estream_mode
 
-    struct stream_id_info_t
-    {
-        estream_type::enum_t m_stream_type;
-        estream_mode::enum_t m_stream_mode;
-        u16                  m_stream_index;
-    };
-
-    static stream_id_info_t s_decode_stream_id(stream_id_t stream_id)
-    {
-        stream_id_info_t info;
-        info.m_stream_type  = (estream_type::enum_t)((stream_id >> 24) & 0xFF);
-        info.m_stream_mode  = (estream_mode::enum_t)((stream_id >> 16) & 0xFF);
-        info.m_stream_index = (u16)(stream_id & 0xFFFF);
-        return info;
-    }
-
-    static stream_id_t s_encode_stream_id(stream_id_info_t const& info) { return ((stream_id_t)info.m_stream_type << 24) | ((stream_id_t)info.m_stream_mode << 16) | (stream_id_t)info.m_stream_index; }
+    static nstreamtype::enum_t s_get_stream_type(stream_id_t sid) { return (nstreamtype::enum_t)((sid >> 24) & 0xff); }
+    static u16                 s_get_stream_index(stream_id_t sid) { return (u16)(sid & 0xffff); }
 
     struct stream_header_t
     {
@@ -74,6 +60,7 @@ namespace ncore
         char*                   m_base_path;
         time_t                  m_last_update_time;
         alloc_t*                m_allocator;
+        stream_id_registry_t*   m_stream_id_registry;
         i32                     m_num_ro_streams;
         i32                     m_max_ro_streams;
         nmmio::mappedfile_t**   m_ro_stream_files;
@@ -274,6 +261,7 @@ namespace ncore
         strcpy((char*)m->m_base_path, base_path);
         m->m_last_update_time    = time(nullptr);  // Current time
         m->m_allocator           = allocator;
+        m->m_stream_id_registry  = stream_id_registry_create(allocator, max_streams);
         m->m_num_ro_streams      = 0;
         m->m_max_ro_streams      = max_streams;
         m->m_ro_streams          = g_allocate_array_and_clear<const stream_header_t*>(allocator, max_streams);
@@ -366,108 +354,6 @@ namespace ncore
         g_destruct(allocator, manager);
     }
 
-    stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, u64 user_id)
-    {
-        // Check if there is already a read-write stream for this user_id and stream_type
-        for (i32 i = 0; i < m->m_num_rw_streams; i++)
-        {
-            stream_header_t* header = m->m_rw_streams[i];
-            if (header->m_user_id == user_id && header->m_stream_type == (u16)stream_type)
-            {
-                // Return existing stream_id
-                stream_id_info_t info;
-                info.m_stream_type  = stream_type;
-                info.m_stream_mode  = estream_mode::readwrite;
-                info.m_stream_index = (u16)i;
-                return s_encode_stream_id(info);
-            }
-        }
-
-        // Schedule a stream request, and create the entry for the stream id. However
-        // the stream initially will be be memory stream until we receive back the
-        // stream request that will give us the mmapped file to use for the stream.
-        // We then write the current memory stream contents to the mmapped file and switch
-        // over to using that file for further writes.
-
-        // Create a new read-write stream and return its stream_id
-        // Initialize m_time_begin and m_time_end to the current time
-        stream_id_info_t info;
-        info.m_stream_type  = stream_type;
-        info.m_stream_mode  = estream_mode::readwrite;
-        info.m_stream_index = (u16)m->m_num_rw_streams;
-
-        const u16 user_index = stream_manager_largest_user_index_for(m, user_id);
-
-        // Make sure there is enough space for the new rw stream
-        stream_manager_resize_rw(m);
-
-        u8* memory_stream = g_allocate_array<u8>(m->m_allocator, 4 * 1024 * 1024);  // Start with 4 MB memory stream
-
-        // Initialize the stream header
-        stream_header_t* header = (stream_header_t*)memory_stream;
-        header->m_user_id       = user_id;
-        header->m_stream_type   = (u16)stream_type;
-        header->m_sizeof_item   = 0;  // Necessary ?
-        header->m_user_index    = user_index + 1;
-        header->m_reserved1     = 0;
-        header->m_reserved2     = 0;
-        header->m_time_begin    = (u64)time(nullptr);
-        header->m_stream_size   = 4 * 1024 * 1024;
-        header->m_item_count    = 0;
-        header->m_time_end      = header->m_time_begin;
-        header->m_write_cursor  = sizeof(stream_header_t);
-
-        // Register the read-write stream
-        m->m_rw_stream_filepaths[m->m_num_rw_streams] = nullptr;  // No filename yet
-        m->m_rw_stream_files[m->m_num_rw_streams]     = nullptr;  // Not yet mapped to a file
-        m->m_rw_stream_memory[m->m_num_rw_streams]    = memory_stream;
-        m->m_rw_streams[m->m_num_rw_streams]          = header;
-        m->m_num_rw_streams += 1;
-
-        return s_encode_stream_id(info);
-    }
-
-    //     const u16 user_index = stream_manager_largest_user_index_for(m, user_id);
-
-    //     const u64   file_size   = 16 * 1024 * 1024;  // Start with 16 MB for now
-    //     const char* name        = "test";
-    //     const u32   sizeof_item = sizeof(u8);
-
-    //     nmmio::mappedfile_t* mmfile_rw = nullptr;
-    //     nmmio::allocate(m->m_allocator, mmfile_rw);
-    //     char filepath[MAXPATHLEN];
-    //     snprintf(filepath, sizeof(filepath), "%s/%s.rwstream", m->m_base_path, name);
-    //     if (nmmio::create_rw(mmfile_rw, filepath, file_size))
-    //     {
-    //         // Initialize the stream header
-    //         stream_header_t* header = (stream_header_t*)nmmio::address_rw(mmfile_rw);
-    //         header->m_user_id       = user_id;
-    //         header->m_stream_type   = (u16)stream_type;
-    //         header->m_sizeof_item   = sizeof_item;
-    //         header->m_user_index    = user_index + 1;
-    //         header->m_reserved1     = 0;
-    //         header->m_reserved2     = 0;
-    //         header->m_time_begin    = (u64)time(nullptr);
-    //         header->m_stream_size   = file_size;
-    //         header->m_item_count    = 0;
-    //         header->m_time_end      = header->m_time_begin;
-    //         header->m_write_cursor  = sizeof(stream_header_t);
-
-    //         // Register the read-write stream
-    //         m->m_rw_stream_filepaths[m->m_num_rw_streams] = g_allocate_array<char>(m->m_allocator, strlen(filepath) + 1);
-    //         strlcpy((char*)m->m_rw_stream_filepaths[m->m_num_rw_streams], filepath, strlen(filepath) + 1);
-    //         m->m_rw_stream_files[m->m_num_rw_streams] = mmfile_rw;
-    //         m->m_rw_streams[m->m_num_rw_streams]      = header;
-    //         m->m_num_rw_streams += 1;
-    //     }
-    //     else
-    //     {
-    //         nmmio::deallocate(m->m_allocator, mmfile_rw);
-    //     }
-
-    //     return s_encode_stream_id(info);
-    // }
-
     static u8* stream_write_u64_le(u8* dest, u64 value, u8 byte_count)
     {
         for (u8 i = 0; i < byte_count; i++)
@@ -509,16 +395,10 @@ namespace ncore
 
     bool stream_write_data(stream_manager_t* m, stream_id_t stream_id, u64 time, const u8* data, u32 size)
     {
-        const stream_id_info_t info = s_decode_stream_id(stream_id);
-        ASSERT(info.m_stream_mode == estream_mode::readwrite);
-        ASSERT(info.m_stream_index < (u16)m->m_num_rw_streams);
-        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != estream_type::TypeFixed || size > m->m_rw_streams[info.m_stream_index]->m_sizeof_item)
-        {
-            return false;
-        }
+        const u32 stream_index = stream_id;
 
         // Write data to the stream identified by stream_id at the given time
-        stream_header_t* stream = m->m_rw_streams[info.m_stream_index];
+        stream_header_t* stream = m->m_rw_streams[stream_index];
         if (stream->m_write_cursor + (c_relative_time_byte_count + size) <= stream->m_stream_size)
         {
             u8* write_cursor = (u8*)stream + stream->m_write_cursor;
@@ -535,16 +415,10 @@ namespace ncore
 
     bool stream_write_u8(stream_manager_t* m, stream_id_t stream_id, u64 time, u8 value)
     {
-        const stream_id_info_t info = s_decode_stream_id(stream_id);
-        ASSERT(info.m_stream_mode == estream_mode::readwrite);
-        ASSERT(info.m_stream_index < (u16)m->m_num_rw_streams);
-        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != estream_type::TypeU8)
-        {
-            return false;
-        }
+        const u32 stream_index = stream_id;
 
         // Write a u8 value to the stream identified by stream_id at the given time
-        stream_header_t* stream       = m->m_rw_streams[info.m_stream_index];
+        stream_header_t* stream       = m->m_rw_streams[stream_index];
         u8*              write_cursor = (u8*)stream + stream->m_write_cursor;
         u64              rtime        = (u64)(time - stream->m_time_begin);
         write_cursor                  = stream_write_u64_le(write_cursor, rtime, c_relative_time_byte_count);
@@ -557,16 +431,10 @@ namespace ncore
 
     bool stream_write_u16(stream_manager_t* m, stream_id_t stream_id, u64 time, u16 value)
     {
-        const stream_id_info_t info = s_decode_stream_id(stream_id);
-        ASSERT(info.m_stream_mode == estream_mode::readwrite);
-        ASSERT(info.m_stream_index < (u16)m->m_num_rw_streams);
-        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != estream_type::TypeU16)
-        {
-            return false;
-        }
+        const u32 stream_index = stream_id;
 
         // Write a u16 value to the stream identified by stream_id at the given time
-        stream_header_t* stream       = m->m_rw_streams[info.m_stream_index];
+        stream_header_t* stream       = m->m_rw_streams[stream_index];
         u8*              write_cursor = (u8*)stream + stream->m_write_cursor;
         u64              rtime        = (u64)(time - stream->m_time_begin);
         write_cursor                  = stream_write_u64_le(write_cursor, rtime, c_relative_time_byte_count);
@@ -579,16 +447,10 @@ namespace ncore
 
     bool stream_write_u32(stream_manager_t* m, stream_id_t stream_id, u64 time, u32 value)
     {
-        const stream_id_info_t info = s_decode_stream_id(stream_id);
-        ASSERT(info.m_stream_mode == estream_mode::readwrite);
-        ASSERT(info.m_stream_index < (u16)m->m_num_rw_streams);
-        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != estream_type::TypeU32)
-        {
-            return false;
-        }
+        const u32 stream_index = stream_id;
 
         // Write a u32 value to the stream identified by stream_id at the given time
-        stream_header_t* stream       = m->m_rw_streams[info.m_stream_index];
+        stream_header_t* stream       = m->m_rw_streams[stream_index];
         u8*              write_cursor = (u8*)stream + stream->m_write_cursor;
         u64              rtime        = (u64)(time - stream->m_time_begin);
         write_cursor                  = stream_write_u64_le(write_cursor, rtime, c_relative_time_byte_count);
@@ -601,16 +463,10 @@ namespace ncore
 
     bool stream_write_f32(stream_manager_t* m, stream_id_t stream_id, u64 time, f32 value)
     {
-        const stream_id_info_t info = s_decode_stream_id(stream_id);
-        ASSERT(info.m_stream_mode == estream_mode::readwrite);
-        ASSERT(info.m_stream_index < (u16)m->m_num_rw_streams);
-        if (m->m_rw_streams[info.m_stream_index]->m_stream_type != estream_type::TypeF32)
-        {
-            return false;
-        }
+        const u32 stream_index = stream_id;
 
         // Write a f32 value to the stream identified by stream_id at the given time
-        stream_header_t* stream       = m->m_rw_streams[info.m_stream_index];
+        stream_header_t* stream       = m->m_rw_streams[stream_index];
         u8*              write_cursor = (u8*)stream + stream->m_write_cursor;
         u64              rtime        = (u64)(time - stream->m_time_begin);
         write_cursor                  = stream_write_u64_le(write_cursor, rtime, c_relative_time_byte_count);
@@ -623,18 +479,11 @@ namespace ncore
 
     bool stream_time(stream_manager_t* m, stream_id_t stream_id, u64& out_time_begin, u64& out_time_end)
     {
-        const stream_id_info_t info   = s_decode_stream_id(stream_id);
+        const u32 stream_index = stream_id;
+
         const stream_header_t* header = nullptr;
-        if (info.m_stream_mode == estream_mode::readwrite)
-        {
-            if (info.m_stream_index < m->m_num_rw_streams)
-                header = m->m_rw_streams[info.m_stream_index];
-        }
-        else if (info.m_stream_mode == estream_mode::readonly)
-        {
-            if (info.m_stream_index < m->m_num_ro_streams)
-                header = m->m_ro_streams[info.m_stream_index];
-        }
+        if (stream_index < m->m_num_rw_streams)
+            header = m->m_rw_streams[stream_index];
 
         out_time_begin = (header != nullptr) ? header->m_time_begin : 0;
         out_time_end   = (header != nullptr) ? header->m_time_end : 0;
@@ -644,18 +493,11 @@ namespace ncore
 
     bool stream_info(stream_manager_t* m, stream_id_t stream_id, u64& out_user_id)
     {
-        const stream_id_info_t info   = s_decode_stream_id(stream_id);
+        const u32 stream_index = stream_id;
+
         const stream_header_t* header = nullptr;
-        if (info.m_stream_mode == estream_mode::readwrite)
-        {
-            if (info.m_stream_index < m->m_num_rw_streams)
-                header = m->m_rw_streams[info.m_stream_index];
-        }
-        else if (info.m_stream_mode == estream_mode::readonly)
-        {
-            if (info.m_stream_index < m->m_num_ro_streams)
-                header = m->m_ro_streams[info.m_stream_index];
-        }
+        if (stream_index < m->m_num_rw_streams)
+            header = m->m_rw_streams[stream_index];
 
         if (header != nullptr)
         {
@@ -669,25 +511,11 @@ namespace ncore
     i32 stream_read(stream_manager_t* m, stream_id_t stream_id, u64 item_index, u32 item_count, void const*& item_array, u32& item_size)
     {
         // Make sure the stream identified by stream_id is of type c_stream_type_fixed_data or c_stream_type_fixed_u8 or c_stream_type_fixed_u16
-        const stream_id_info_t info = s_decode_stream_id(stream_id);
-        ASSERT(info.m_stream_mode == estream_mode::readwrite || info.m_stream_mode == estream_mode::readonly);
+        const u32 stream_index = stream_id;
 
         const stream_header_t* header = nullptr;
-        if (info.m_stream_mode == estream_mode::readwrite)
-        {
-            ASSERT(info.m_stream_index < (u16)m->m_num_rw_streams);
-            header = m->m_rw_streams[info.m_stream_index];
-        }
-        else if (info.m_stream_mode == estream_mode::readonly)
-        {
-            ASSERT(info.m_stream_index < (u16)m->m_num_ro_streams);
-            header = m->m_ro_streams[info.m_stream_index];
-        }
-        else
-        {
-            ASSERT(false);  // Invalid stream mode
-            return 0;
-        }
+        ASSERT(stream_index < (u16)m->m_num_rw_streams);
+        header = m->m_rw_streams[stream_index];
 
         // TODO : implement reading from the stream
 

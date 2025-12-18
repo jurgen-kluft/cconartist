@@ -1,36 +1,27 @@
 {
-    "servers": [
+    "discovery-port": 31337,
+    "tcp-servers": [
         {
-            "name": "TCP Server for GeekOpen",
-            "type": "tcp",
+            "name": "GeekOpen Server",
             "port": 31330,
-            "decoders": [
-                "geekopen"
-            ]
+            "stream": "geek-open.mmstream"
         },
+        {
+            "name": "Sensor Server",
+            "port": 31372,
+            "stream": "sensor-tcp.mmstream"
+        },
+        {
+            "name": "Image Server",
+            "port": 31378,
+            "stream": "image.mmstream"
+        }
+    ],
+    "udp-servers": [
         {
             "name": "UDP Server for Sensors",
-            "type": "udp",
             "port": 31370,
-            "decoders": [
-                "sensorpacket"
-            ]
-        },
-        {
-            "name": "TCP Server for Sensors",
-            "type": "tcp",
-            "port": 31372,
-            "decoders": [
-                "sensorpacket"
-            ]
-        },
-        {
-            "name": "TCP Server for Images",
-            "type": "tcp",
-            "port": 31378,
-            "decoders": [
-                "imagepacket"
-            ]
+            "stream": "sensor-udp.mmstream"
         }
     ]
 }

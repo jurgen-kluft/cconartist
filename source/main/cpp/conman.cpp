@@ -11,9 +11,9 @@ namespace ncore
     // - remote_ip
     static int compare_key(connection_info_t *a, const connection_info_t *b)
     {
-        if (a->m_type < b->m_type)
+        if (a->m_flags[0] < b->m_flags[0])
             return -1;
-        else if (a->m_type > b->m_type)
+        else if (a->m_flags[0] > b->m_flags[0])
             return 1;
 
         if (a->m_local_port < b->m_local_port)
@@ -117,7 +117,7 @@ namespace ncore
         {
             connection_info_t *existing = mgr->m_connections[idx];
             connection_manager_release(mgr, info);
-            existing->m_state       = STATE_CONNECTED;
+            existing->set_connected();
             existing->m_last_active = uv_hrtime();
             uv_mutex_unlock(&mgr->m_mutex);
             return existing;
@@ -128,7 +128,7 @@ namespace ncore
             mgr->m_connections = (connection_info_t **)realloc(mgr->m_connections, mgr->m_capacity * sizeof(connection_info_t *));
         }
         info->m_last_active = uv_hrtime();
-        info->m_state       = STATE_CONNECTED;
+        info->set_connected();
         memmove(&mgr->m_connections[idx + 1], &mgr->m_connections[idx], (mgr->m_count - idx) * sizeof(connection_info_t *));
         mgr->m_connections[idx] = info;
         mgr->m_count++;
@@ -143,7 +143,7 @@ namespace ncore
         ssize_t idx = search_connection(mgr, info, &found);
         if (found)
         {
-            mgr->m_connections[idx]->m_state       = STATE_DISCONNECTED;
+            mgr->m_connections[idx]->set_disconnected();
             mgr->m_connections[idx]->m_last_active = uv_hrtime();
         }
         uv_mutex_unlock(&mgr->m_mutex);

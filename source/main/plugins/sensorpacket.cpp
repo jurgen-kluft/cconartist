@@ -86,8 +86,8 @@ extern "C"
                     break;
             }
 
-            EValueUnit  sensor_unit = get_value_unit((EUserType)value->m_type);
-            const char* unit_string = to_string(sensor_unit);
+            nunit::enum_t sensor_unit = get_value_unit((nusertype::enum_t)value->m_type);
+            const char*   unit_string = nunit::to_string(sensor_unit);
 
             // Initialization of a UI item for this sensor value
             char temporary_string[64];
@@ -108,12 +108,17 @@ extern "C"
             text_item->m_type                 = UIItemText;
             text_item->m_value                = value_string;
             text_item->m_value_len            = value_len;
-            text_item->m_key                  = ui_string((EUserType)value->m_type);
+            text_item->m_key                  = to_key_string((nusertype::enum_t)value->m_type);
             text_item->m_key_len              = strlen(text_item->m_key);
 
             ++value;
         }
         return ui_element;
+    }
+
+    inline uint64_t make_id(uint8_t const* mac, uint8_t stream_type, uint8_t user_type)
+    {
+        return ((uint64_t)mac[0] << 40) | ((uint64_t)mac[1] << 32) | ((uint64_t)mac[2] << 24) | ((uint64_t)mac[3] << 16) | ((uint64_t)mac[4] << 8) | ((uint64_t)mac[5]) | ((uint64_t)stream_type << 48) | ((uint64_t)user_type << 56);
     }
 
     void decoder_write_to_stream(decoder_context_t* ctx, const unsigned char* packet_data, unsigned int packet_size)
@@ -123,28 +128,48 @@ extern "C"
         sensor_packet_t const* packet = (sensor_packet_t const*)packet_data;
         const unsigned char*   end    = packet_data + packet_size;
 
-        const uint8_t* mac     = packet->m_mac;
-        const uint64_t user_id = ((uint64_t)mac[0] << 40) | ((uint64_t)mac[1] << 32) | ((uint64_t)mac[2] << 24) | ((uint64_t)mac[3] << 16) | ((uint64_t)mac[4] << 8) | (uint64_t)mac[5];
-
         // Write to the full packet stream
-        ctx->m_stream->write_var_data((user_id << 16) | ID_SENSOR, current_time, packet_data, packet_size);
+        const uint32_t sensor_hid = 0x00000000;  // Use a fixed HID for the full sensor packet
+        const uint16_t sensor_lid = 0xFFFF;      // Use a fixed LID for the full sensor packet
+        ncore::stream_id_t stream_id_var = ctx->m_stream->register_stream(sensor_hid, sensor_lid, nstreamtype::TypeVariable, nusertype::ID_SENSOR);
+        ctx->m_stream->write_var_data(stream_id_var, current_time, packet_data, packet_size);
+
+        const uint8_t* mac = packet->m_mac;
+        const uint32_t hid = ((uint32_t)mac[0]) | ((uint32_t)mac[1] << 8) | ((uint32_t)mac[2] << 16) | ((uint16_t)mac[3] << 24);
+        const uint16_t lid = ((uint16_t)mac[4] << 8) | ((uint16_t)mac[5]);
 
         // Write individual sensor values
+        // Sensor values can only be U8, U16, S8 or S16, since all incoming values are 2 bytes
         sensor_value_t const* value = (sensor_value_t const*)(packet_data + sizeof(sensor_packet_t));
         while (((const unsigned char*)value + sizeof(sensor_value_t)) <= end)
         {
-            const uint64_t user_type    = (uint64_t)value->m_type;
-            const uint16_t sensor_value = ((uint16_t)value->m_h << 8) | (uint16_t)value->m_l;
-            ctx->m_stream->write_u16((user_id << 16) | user_type, current_time, sensor_value);
+            const uint8_t      user_type   = (uint8_t)value->m_type;
+            const uint8_t      stream_type = get_stream_type(nusertype::enum_t(user_type));
+            ncore::stream_id_t stream_id   = ctx->m_stream->register_stream(hid, lid, stream_type, user_type);
+            switch (stream_type)
+            {
+                case nstreamtype::TypeU8: ctx->m_stream->write_u8(stream_id, current_time, value->m_l); break;
+                case nstreamtype::TypeU16:
+                    const uint16_t sensor_value = ((uint16_t)value->m_h << 8) | (uint16_t)value->m_l;
+                    ctx->m_stream->write_u16(stream_id, current_time, sensor_value);
+                    break;
+                case nstreamtype::TypeS8:
+                    const int8_t sensor_value = (int8_t)value->m_l;
+                    ctx->m_stream->write_s8(stream_id, current_time, (int8_t)sensor_value);
+                    break;
+                case nstreamtype::TypeS16:
+                    const int16_t sensor_value = ((int16_t)value->m_h << 8) | (int16_t)value->m_l;
+                    ctx->m_stream->write_s16(stream_id, current_time, (int16_t)sensor_value);
+                    break;
+                default:
+                    // Unsupported stream type for this sensor value
+                    break;
+            }
             ++value;
         }
     }
 
-    void decoder_initialize(decoder_context_t *ctx)
-    {
-
-    }
-
+    void decoder_initialize(decoder_context_t* ctx) {}
 
 #ifdef __cplusplus
 }

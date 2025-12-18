@@ -74,42 +74,17 @@ protected:
     virtual void  v_deallocate(void *ptr)       = 0;
 };
 
-class decoder_stream_interface_t
-{
-public:
-    bool allocate_vardata(uint64_t user_id, uint64_t time, uint8_t *&data, uint32_t data_size) { return v_allocate_vardata(user_id, time, data, data_size); }
-    bool allocate_fixdata(uint64_t user_id, uint64_t time, uint8_t *&data, uint32_t data_size) { return v_allocate_fixdata(user_id, time, data, data_size); }
-    void write_var_data(uint64_t user_id, uint64_t time, uint8_t const *data, uint32_t data_size) { v_write_var_data(user_id, time, data, data_size); }
-    void write_fix_data(uint64_t user_id, uint64_t time, uint8_t const *data, uint32_t data_size) { v_write_fix_data(user_id, time, data, data_size); }
-    void write_u8(uint64_t user_id, uint64_t time, uint8_t value) { v_write_u8(user_id, time, value); }
-    void write_u16(uint64_t user_id, uint64_t time, uint16_t value) { v_write_u16(user_id, time, value); }
-    void write_u32(uint64_t user_id, uint64_t time, uint32_t value) { v_write_u32(user_id, time, value); }
-    void write_f32(uint64_t user_id, uint64_t time, float value) { v_write_f32(user_id, time, value); }
-    void write_f64(uint64_t user_id, uint64_t time, double value) { v_write_f64(user_id, time, value); }
-
-protected:
-    virtual bool v_allocate_vardata(uint64_t user_id, uint64_t time, uint8_t *&data, uint32_t data_size)    = 0;
-    virtual bool v_allocate_fixdata(uint64_t user_id, uint64_t time, uint8_t *&data, uint32_t data_size)    = 0;
-    virtual void v_write_var_data(uint64_t user_id, uint64_t time, uint8_t const *data, uint32_t data_size) = 0;
-    virtual void v_write_fix_data(uint64_t user_id, uint64_t time, uint8_t const *data, uint32_t data_size) = 0;
-    virtual void v_write_u8(uint64_t user_id, uint64_t time, uint8_t value)                                 = 0;
-    virtual void v_write_u16(uint64_t user_id, uint64_t time, uint16_t value)                               = 0;
-    virtual void v_write_u32(uint64_t user_id, uint64_t time, uint32_t value)                               = 0;
-    virtual void v_write_f32(uint64_t user_id, uint64_t time, float value)                                  = 0;
-    virtual void v_write_f64(uint64_t user_id, uint64_t time, double value)                                 = 0;
-};
-
 // Note: Every connection (TCP connection, UDP connection) must have its own context.
 struct decoder_context_t
 {
-    decoder_allocator_t        *m_temp;
-    decoder_allocator_t        *m_main_heap;
-    decoder_allocator_t        *m_ui_heap;
-    decoder_stream_interface_t *m_stream;
-    void                       *m_user_context0;
-    void                       *m_user_context1;
-    int                         m_user_data0;
-    int                         m_user_data1;
+    decoder_allocator_t *m_temp;
+    decoder_allocator_t *m_main_heap;
+    decoder_allocator_t *m_ui_heap;
+    void                *m_stream;
+    void                *m_user_context0;
+    void                *m_user_context1;
+    int                  m_user_data0;
+    int                  m_user_data1;
 };
 
 // This is for a decoder plugin to initialize its internal state

@@ -6,6 +6,7 @@
 #endif
 
 #include "cconartist/types.h"
+#include "cconartist/user_types.h"
 
 namespace ncore
 {
@@ -13,13 +14,17 @@ namespace ncore
 
     // Public API
 
+    // Format of ID:
+    // - [byte[6] Mac, byte stream-type, byte user-type]
+
     struct stream_manager_t;
     stream_manager_t* stream_manager_create(alloc_t* allocator, i32 max_streams, const char* base_path);
     void              stream_manager_destroy(alloc_t* allocator, stream_manager_t*& manager);
     void              stream_manager_flush(stream_manager_t* manager);
     void              stream_manager_update(stream_manager_t* manager, f64 now); // main event loop call
 
-    stream_id_t stream_register(stream_manager_t* m, estream_type::enum_t stream_type, u64 user_id);
+    // When you have an ID for a stream, you can register it to get a stream_id to use for further operations
+    stream_id_t stream_manager_register_stream(stream_manager_t* m, u32 hid, u16 lid, u8 stream_type, u8 user_type);
 
     // Write to the stream, returns false if failed, check by calling stream_is_full() to see if stream is full
     bool stream_write_data(stream_manager_t* m, stream_id_t stream_id, u64 time, const u8* data, u32 size);

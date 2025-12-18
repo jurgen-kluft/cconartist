@@ -6,9 +6,8 @@
 
 namespace nusertype
 {
-    typedef unsigned char enum_t;
-
-    enum
+    typedef unsigned char value_t;
+    enum enum_t
     {
         ID_UNKNOWN           = 0,   // Unknown
         ID_TEMPERATURE       = 1,   // Temperature
@@ -71,17 +70,37 @@ namespace nusertype
     };
 }  // namespace nusertype
 
+namespace nstreamtype
+{
+    typedef unsigned char value_t;
+    enum enum_t
+    {
+        TypeUnknown  = 0,
+        TypeU8       = 0x1,
+        TypeU16      = 0x2,
+        TypeU32      = 0x3,
+        TypeS8       = 0x11,
+        TypeS16      = 0x12,
+        TypeS32      = 0x13,
+        TypeF32      = 0x15,
+        TypeF64      = 0x25,
+        TypeFixed    = 0x20,
+        TypeVariable = 0x23,
+    };
+}  // namespace nstreamtype
+
 // Note: array string array is sorted
 const nusertype::enum_t* get_user_type_type_array();
 const char**             get_user_type_key_string_array();
 const char**             get_user_type_ui_string_array();
 const short*             get_user_type_to_index_array();
 
-const char*       to_ui_string(nusertype::enum_t type);                       // UI readable string
-const char*       to_key_string(nusertype::enum_t type);                      // Key string for serialization / deserialization
-nusertype::enum_t from_string(const char* key_str);                           // Get nusertype::enum_t from key string
-nusertype::enum_t from_string(const char* key_str, const char* key_str_end);  // Get nusertype::enum_t from key string
-EValueType        get_value_type(nusertype::enum_t type);
-EValueUnit        get_value_unit(nusertype::enum_t type);
+const char*         to_ui_string(nusertype::enum_t type);                       // UI readable string
+const char*         to_key_string(nusertype::enum_t type);                      // Key string for serialization / deserialization
+nusertype::enum_t   from_string(const char* key_str);                           // Get nusertype::enum_t from key string
+nusertype::enum_t   from_string(const char* key_str, const char* key_str_end);  // Get nusertype::enum_t from key string
+nvaluetype::enum_t  get_value_type(nusertype::enum_t type);
+nunit::enum_t       get_value_unit(nusertype::enum_t type);
+nstreamtype::enum_t get_stream_type(nusertype::enum_t type);
 
 #endif  // __CCONARTIST_DECODER_USER_TYPE_H__

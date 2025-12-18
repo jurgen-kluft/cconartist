@@ -11,19 +11,20 @@ namespace ncore
 {
     class alloc_t;
 
-    enum EServerType
+    struct config_tcp_server_t
     {
-        cServerTypeTcp = 'T',
-        cServerTypeUdp = 'U',
+        const char* m_server_name;
+        char const* m_stream_name;
+        u16         m_port;
+
+        DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
 
-    struct config_server_t
+    struct config_udp_server_t
     {
-        const char*  m_name;
-        u8           m_type;
-        u16          m_port;
-        ncore::s32   m_nb_decoders;  // number of decoders
-        const char** m_decoders;     // array of decoder names
+        const char* m_server_name;
+        char const* m_stream_name;
+        u16         m_port;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
@@ -41,10 +42,11 @@ namespace ncore
 
     struct config_main_t
     {
-        i32              m_num_servers;
-        i32              m_num_streams;
-        config_server_t* m_servers;
-        config_stream_t* m_streams;
+        i32                  m_num_tcp_servers;
+        i32                  m_num_udp_servers;
+        config_tcp_server_t* m_tcp_servers;
+        config_udp_server_t* m_udp_servers;
+        u16                  m_discovery_port;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
