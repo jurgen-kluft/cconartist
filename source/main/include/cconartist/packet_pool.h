@@ -16,15 +16,15 @@ namespace ncore
 
     struct packet_t
     {
-        connection_info_t *m_conn;
-        u32                m_data_size;
-        u32                m_data_capacity;
-        u8                *m_data;
+        tcp_con_t *m_conn;
+        u32        m_data_size;
+        u32        m_data_capacity;
+        u8        *m_data;
     };
 
-    packet_pool_t *packet_pool_create(alloc_t *allocator, u16 pool_size, u16 max_packet_data_size);
+    packet_pool_t *packet_pool_create(alloc_t *allocator, u32 initial_pool_size, u32 max_pool_size);
     void           packet_pool_destroy(packet_pool_t *&pool);
-    packet_t      *packet_acquire(packet_pool_t *pool);
+    packet_t      *packet_acquire(packet_pool_t *pool, u32 packet_size);
     void           packet_release(packet_pool_t *pool, packet_t *pkt);
 }  // namespace ncore
 

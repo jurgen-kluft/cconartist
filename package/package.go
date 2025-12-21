@@ -1,6 +1,7 @@
 package cconartist
 
 import (
+	callocator "github.com/jurgen-kluft/callocator/package"
 	cbase "github.com/jurgen-kluft/cbase/package"
 	"github.com/jurgen-kluft/ccode/denv"
 	cgui "github.com/jurgen-kluft/cgui/package"
@@ -19,6 +20,7 @@ func GetPackage() *denv.Package {
 	name := repo_name
 
 	// dependencies
+	callocator := callocator.GetPackage()
 	cbasepkg := cbase.GetPackage()
 	clibuvpkg := clibuv.GetPackage()
 	cmmiopkg := cmmio.GetPackage()
@@ -28,6 +30,7 @@ func GetPackage() *denv.Package {
 
 	// main package
 	mainpkg := denv.NewPackage(repo_path, repo_name)
+	mainpkg.AddPackage(callocator)
 	mainpkg.AddPackage(cbasepkg)
 	mainpkg.AddPackage(clibuvpkg)
 	mainpkg.AddPackage(cmmiopkg)
@@ -37,6 +40,7 @@ func GetPackage() *denv.Package {
 
 	// main library
 	mainlib := denv.SetupCppLibProject(mainpkg, name)
+	mainlib.AddDependencies(callocator.GetMainLib())
 	mainlib.AddDependencies(cbasepkg.GetMainLib())
 	mainlib.AddDependencies(clibuvpkg.GetMainLib())
 	mainlib.AddDependencies(cmmiopkg.GetMainLib())

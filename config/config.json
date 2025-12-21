@@ -4,24 +4,67 @@
         {
             "name": "GeekOpen Server",
             "port": 31330,
-            "stream": "geek-open.mmstream"
+            "stream": {
+                "name": "geek-open.mmstream",
+                "index-size": 24,
+                "data-size": 64,
+                "max-consumers": 8,
+                "index-filename": "geek-open.mmstream.index",
+                "data-filename": "geek-open.mmstream.data",
+                "control-filename": "geek-open.mmstream.control",
+                "new-sem-name": "geek-open.newsem",
+                "reg-sem-name": "geek-open.regsem"
+            }
         },
         {
             "name": "Sensor Server",
             "port": 31372,
-            "stream": "sensor-tcp.mmstream"
+            "stream":
+            {
+                "name": "sensor-tcp.mmstream",
+                "index-size": 48,
+                "data-size": 32,
+                "max-consumers": 8,
+                "index-filename": "sensor-tcp.mmstream.index",
+                "data-filename": "sensor-tcp.mmstream.data",
+                "control-filename": "sensor-tcp.mmstream.control",
+                "new-sem-name": "sensor-tcp.newsem",
+                "reg-sem-name": "sensor-tcp.regsem"
+            }
         },
         {
             "name": "Image Server",
             "port": 31378,
-            "stream": "image.mmstream"
+            "stream":
+            {
+                "name": "image.mmstream",
+                "index-size": 1,
+                "data-size": 64,
+                "max-consumers": 8,
+                "index-filename": "image.mmstream.index",
+                "data-filename": "image.mmstream.data",
+                "control-filename": "image.mmstream.control",
+                "new-sem-name": "image.newsem",
+                "reg-sem-name": "image.regsem"
+            }
         }
     ],
     "udp-servers": [
         {
             "name": "UDP Server for Sensors",
             "port": 31370,
-            "stream": "sensor-udp.mmstream"
+            "stream":
+            {
+                "name": "sensor-udp.mmstream",
+                "index-size": 48,
+                "data-size": 32,
+                "max-consumers": 8,
+                "index-filename": "sensor-udp.mmstream.index",
+                "data-filename": "sensor-udp.mmstream.data",
+                "control-filename": "sensor-udp.mmstream.control",
+                "new-sem-name": "sensor-udp.newsem",
+                "reg-sem-name": "sensor-udp.regsem"
+            }
         }
     ]
 }

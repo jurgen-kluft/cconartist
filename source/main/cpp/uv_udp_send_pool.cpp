@@ -1,12 +1,10 @@
-#include "cconartist/udp_send_pool.h"
+#include "cconartist/uv_udp_send_pool.h"
 
 #include "ccore/c_allocator.h"
 
-#include <string.h>
-
 namespace ncore
 {
-    struct udp_send_pool_t
+    struct uv_udp_send_pool_t
     {
         uv_udp_send_t *m_pool;        // Pool of send requests
         u16           *m_free_list;   // Holds indices of free items
@@ -17,9 +15,9 @@ namespace ncore
         DCORE_CLASS_PLACEMENT_NEW_DELETE;
     };
 
-    udp_send_pool_t *send_pool_create(alloc_t *allocator, u16 size)
+    uv_udp_send_pool_t *uv_udp_send_pool_create(alloc_t *allocator, u16 size)
     {
-        udp_send_pool_t *send_pool = g_construct<udp_send_pool_t>(allocator);
+        uv_udp_send_pool_t *send_pool = g_construct<uv_udp_send_pool_t>(allocator);
         send_pool->m_free_count    = size;
         send_pool->m_capacity      = size;
         send_pool->m_pool          = g_allocate_array<uv_udp_send_t>(allocator, size);
@@ -30,7 +28,7 @@ namespace ncore
         return send_pool;
     }
 
-    void send_pool_destroy(udp_send_pool_t *&send_pool)
+    void uv_udp_send_pool_destroy(uv_udp_send_pool_t *&send_pool)
     {
         if (send_pool->m_pool != nullptr)
         {
@@ -47,7 +45,7 @@ namespace ncore
     }
 
     // Acquire a send request from the pool
-    uv_udp_send_t *send_pool_acquire(udp_send_pool_t *send_pool)
+    uv_udp_send_t *uv_udp_send_acquire(uv_udp_send_pool_t *send_pool)
     {
         if (send_pool->m_free_count == 0)
         {
@@ -60,7 +58,7 @@ namespace ncore
     }
 
     // Release a send request back to the pool
-    void send_pool_release(udp_send_pool_t *send_pool, uv_udp_send_t *item)
+    void uv_udp_send_release(uv_udp_send_pool_t *send_pool, uv_udp_send_t *item)
     {
         u16 index = (u16)(item - send_pool->m_pool);
         if (index >= 0 && index < send_pool->m_capacity)

@@ -11,31 +11,38 @@ namespace ncore
 {
     class alloc_t;
 
+    struct config_stream_t
+    {
+        const char* m_name;
+        u64         m_index_size;     // unit is MB
+        u64         m_data_size;      // unit is MB
+        u32         m_max_consumers;  // maximum number of consumers
+
+        const char* m_index_filename;
+        const char* m_data_filename;
+        const char* m_control_filename;
+        const char* m_new_sem_name;
+        const char* m_reg_sem_name;
+
+        DCORE_CLASS_PLACEMENT_NEW_DELETE
+    };
+
     struct config_tcp_server_t
     {
-        const char* m_server_name;
-        char const* m_stream_name;
-        u16         m_port;
+        const char*     m_server_name;
+        char const*     m_stream_name;
+        config_stream_t m_stream_config;
+        u16             m_port;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
 
     struct config_udp_server_t
     {
-        const char* m_server_name;
-        char const* m_stream_name;
-        u16         m_port;
-
-        DCORE_CLASS_PLACEMENT_NEW_DELETE
-    };
-
-    struct config_stream_t
-    {
-        const char* m_name;
-        u64         m_user_id;
-        u8          m_user_type;    // enum EUserType
-        u8          m_stream_type;  // type stream_type_t
-        u32         m_data_size;
+        const char*     m_server_name;
+        char const*     m_stream_name;
+        config_stream_t m_stream_config;
+        u16             m_port;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };

@@ -15,6 +15,31 @@
 
 namespace ncore
 {
+    static void decode_config_stream(njson::ndecoder::decoder_t* d, config_stream_t* obj)
+    {
+        njson::ndecoder::result_t result = njson::ndecoder::read_object_begin(d);
+        if (njson::ndecoder::NotOk(result))
+            return;
+
+        njson::ndecoder::register_member(d, "name", &obj->m_name);
+        njson::ndecoder::register_member(d, "index-size", &obj->m_index_size);
+        njson::ndecoder::register_member(d, "data-size", &obj->m_data_size);
+        njson::ndecoder::register_member(d, "max-consumers", &obj->m_max_consumers);
+
+        njson::ndecoder::register_member(d, "index-filename", &obj->m_index_filename);
+        njson::ndecoder::register_member(d, "data-filename", &obj->m_data_filename);
+        njson::ndecoder::register_member(d, "control-filename", &obj->m_control_filename);
+        njson::ndecoder::register_member(d, "new-sem-name", &obj->m_new_sem_name);
+        njson::ndecoder::register_member(d, "reg-sem-name", &obj->m_reg_sem_name);
+
+        while (njson::ndecoder::OkAndNotEnded(result))
+        {
+            njson::ndecoder::field_t field = njson::ndecoder::decode_field(d);
+            njson::ndecoder::decoder_decode_member(d, field);
+            result = njson::ndecoder::read_object_end(d);
+        }
+    }
+
     static void decode_config_tcp_server(njson::ndecoder::decoder_t* d, config_tcp_server_t* obj)
     {
         njson::ndecoder::result_t result = njson::ndecoder::read_object_begin(d);
@@ -23,11 +48,17 @@ namespace ncore
 
         njson::ndecoder::register_member(d, "name", &obj->m_server_name);
         njson::ndecoder::register_member(d, "port", &obj->m_port);
-        njson::ndecoder::register_member(d, "stream", &obj->m_stream_name);
         while (njson::ndecoder::OkAndNotEnded(result))
         {
             njson::ndecoder::field_t field = njson::ndecoder::decode_field(d);
-            njson::ndecoder::decoder_decode_member(d, field);
+            if (njson::ndecoder::field_equal(field, "stream"))
+            {
+                decode_config_stream(d, &obj->m_stream_config);
+            }
+            else
+            {
+                njson::ndecoder::decoder_decode_member(d, field);
+            }
             result = njson::ndecoder::read_object_end(d);
         }
     }
@@ -40,11 +71,17 @@ namespace ncore
 
         njson::ndecoder::register_member(d, "name", &obj->m_server_name);
         njson::ndecoder::register_member(d, "port", &obj->m_port);
-        njson::ndecoder::register_member(d, "stream", &obj->m_stream_name);
         while (njson::ndecoder::OkAndNotEnded(result))
         {
             njson::ndecoder::field_t field = njson::ndecoder::decode_field(d);
-            njson::ndecoder::decoder_decode_member(d, field);
+            if (njson::ndecoder::field_equal(field, "stream"))
+            {
+                decode_config_stream(d, &obj->m_stream_config);
+            }
+            else
+            {
+                njson::ndecoder::decoder_decode_member(d, field);
+            }
             result = njson::ndecoder::read_object_end(d);
         }
     }

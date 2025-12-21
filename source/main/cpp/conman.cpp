@@ -1,152 +1,60 @@
 #include "cconartist/conman.h"
-
-#include <string.h>
+#include "ccore/c_allocator.h"
+#include "ccore/c_memory.h"
 
 namespace ncore
 {
-    // Connections are identified by:
-    // - type
-    // - local_port
-    // - remote_port
-    // - remote_ip
-    static int compare_key(connection_info_t *a, const connection_info_t *b)
+    struct tcp_con_mgr_t
     {
-        if (a->m_flags[0] < b->m_flags[0])
-            return -1;
-        else if (a->m_flags[0] > b->m_flags[0])
-            return 1;
+        alloc_t   *m_allocator;
+        tcp_con_t *m_conn_array;
+        i32       *m_conn_free;
+        u32        m_num_free;
+        u32        m_capacity;
+    };
 
-        if (a->m_local_port < b->m_local_port)
-            return -1;
-        else if (a->m_local_port > b->m_local_port)
-            return 1;
-
-        if (a->m_remote_port < b->m_remote_port)
-            return -1;
-        else if (a->m_remote_port > b->m_remote_port)
-            return 1;
-
-        for (int i = 0; i < 4; i++)
-        {
-            if (a->m_remote_ip[i] != b->m_remote_ip[i])
-            {
-                if (a->m_remote_ip[i] < b->m_remote_ip[i])
-                    return -1;
-                else
-                    return 1;
-            }
-        }
+    tcp_con_mgr_t *tcp_con_mgr_create(alloc_t *allocator, u32 max_capacity)
+    {
+        tcp_con_mgr_t *mgr = g_allocate_and_clear<tcp_con_mgr_t>(allocator);
+        mgr->m_allocator   = allocator;
+        mgr->m_conn_array  = g_allocate_array_and_clear<tcp_con_t>(allocator, max_capacity);
+        mgr->m_conn_free   = g_allocate_array<i32>(allocator, max_capacity);
+        mgr->m_num_free    = max_capacity;
+        mgr->m_capacity    = max_capacity;
+        for (u32 i = 0; i < max_capacity; i++)
+            mgr->m_conn_free[i] = (i32)(max_capacity - 1 - i);
 
         return 0;
     }
 
-    static ssize_t search_connection(connection_manager_t *mgr, connection_info_t *info, int *found)
+    void tcp_con_mgr_destroy(tcp_con_mgr_t *mgr)
     {
-        size_t left = 0, right = mgr->m_count;
-        *found = 0;
-        while (left < right)
+        alloc_t *allocator = mgr->m_allocator;
+
+        allocator->deallocate(mgr->m_conn_free);
+        allocator->deallocate(mgr->m_conn_array);
+
+        allocator->deallocate(mgr);
+    }
+
+    tcp_con_t *tcp_con_alloc(tcp_con_mgr_t *mgr)
+    {
+        if (mgr->m_num_free > 0)
         {
-            size_t mid = (left + right) / 2;
-            int    cmp = compare_key(info, mgr->m_connections[mid]);
-            if (cmp == 0)
-            {
-                *found = 1;
-                return mid;
-            }
-            else if (cmp < 0)
-                right = mid;
-            else
-                left = mid + 1;
-        }
-        return left;
-    }
-
-    int connection_manager_init(connection_manager_t *mgr, size_t initial_capacity)
-    {
-        mgr->m_connections     = (connection_info_t **)calloc(initial_capacity, sizeof(connection_info_t *));
-        mgr->m_free_connection = NULL;
-        mgr->m_count           = 0;
-        mgr->m_capacity        = initial_capacity;
-        uv_mutex_init(&mgr->m_mutex);
-        return 0;
-    }
-
-    void connection_manager_destroy(connection_manager_t *mgr)
-    {
-        uv_mutex_lock(&mgr->m_mutex);
-        for (int i = 0; i < mgr->m_count; i++)
-            free(mgr->m_connections[i]);
-        free(mgr->m_connections);
-        uv_mutex_unlock(&mgr->m_mutex);
-        uv_mutex_destroy(&mgr->m_mutex);
-    }
-
-    connection_info_t *connection_manager_alloc(connection_manager_t *mgr)
-    {
-        uv_mutex_lock(&mgr->m_mutex);
-        if (mgr->m_free_connection)
-        {
-            connection_info_t *info = mgr->m_free_connection;
-            mgr->m_free_connection  = NULL;
-            uv_mutex_unlock(&mgr->m_mutex);
+            mgr->m_num_free--;
+            const i32  conn_index = mgr->m_conn_free[mgr->m_num_free];
+            tcp_con_t *info       = &mgr->m_conn_array[conn_index];
             return info;
         }
-        uv_mutex_unlock(&mgr->m_mutex);
-        connection_info_t *info = (connection_info_t *)malloc(sizeof(connection_info_t));
-        memset(info, 0, sizeof(connection_info_t));
-        return info;
+        return nullptr;
     }
 
-    void connection_manager_release(connection_manager_t *mgr, connection_info_t *info)
+    void tcp_con_free(tcp_con_mgr_t *mgr, tcp_con_t *info)
     {
-        uv_mutex_lock(&mgr->m_mutex);
-        if (mgr->m_free_connection)
-        {
-            free(mgr->m_free_connection);
-        }
-        mgr->m_free_connection = info;
-        uv_mutex_unlock(&mgr->m_mutex);
-    }
-
-    connection_info_t *connection_manager_commit(connection_manager_t *mgr, connection_info_t *info)
-    {
-        uv_mutex_lock(&mgr->m_mutex);
-        int     found;
-        ssize_t idx = search_connection(mgr, info, &found);
-        if (found)
-        {
-            connection_info_t *existing = mgr->m_connections[idx];
-            connection_manager_release(mgr, info);
-            existing->set_connected();
-            existing->m_last_active = uv_hrtime();
-            uv_mutex_unlock(&mgr->m_mutex);
-            return existing;
-        }
-        if (mgr->m_count >= mgr->m_capacity)
-        {
-            mgr->m_capacity *= 2;
-            mgr->m_connections = (connection_info_t **)realloc(mgr->m_connections, mgr->m_capacity * sizeof(connection_info_t *));
-        }
-        info->m_last_active = uv_hrtime();
-        info->set_connected();
-        memmove(&mgr->m_connections[idx + 1], &mgr->m_connections[idx], (mgr->m_count - idx) * sizeof(connection_info_t *));
-        mgr->m_connections[idx] = info;
-        mgr->m_count++;
-        uv_mutex_unlock(&mgr->m_mutex);
-        return info;
-    }
-
-    void connection_manager_mark_disconnected(connection_manager_t *mgr, connection_info_t *info)
-    {
-        uv_mutex_lock(&mgr->m_mutex);
-        int     found;
-        ssize_t idx = search_connection(mgr, info, &found);
-        if (found)
-        {
-            mgr->m_connections[idx]->set_disconnected();
-            mgr->m_connections[idx]->m_last_active = uv_hrtime();
-        }
-        uv_mutex_unlock(&mgr->m_mutex);
+        nmem::memclr(info, sizeof(tcp_con_t));
+        const i32 conn_index              = (i32)(info - mgr->m_conn_array);
+        mgr->m_conn_free[mgr->m_num_free] = conn_index;
+        mgr->m_num_free++;
     }
 
 }  // namespace ncore

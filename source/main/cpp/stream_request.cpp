@@ -345,7 +345,7 @@ namespace ncore
                                 // left = ID, which is '001122334455' or '00:11:22:33:44:55' format
                                 mappings->m_mapping_ids[mapping_index] = nrunes::parse_mac(left);
                                 // right = filename, max 255-8 characters
-                                const u32 rlen = math::g_min((u32)(right.m_end - right.m_str), (u32)DMAPPING_NAME_MAXLEN - 1);
+                                const u32 rlen = math::min((u32)(right.m_end - right.m_str), (u32)DMAPPING_NAME_MAXLEN - 1);
                                 nmem::memcpy(&mappings->m_mapping_names[mapping_index * DMAPPING_NAME_MAXLEN], right.m_ascii + right.m_str, rlen);
                                 mappings->m_mapping_names[mapping_index * DMAPPING_NAME_MAXLEN + rlen] = 0;
                             }

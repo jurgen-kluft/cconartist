@@ -66,8 +66,8 @@ namespace ncore
         nmmio::mappedfile_t**   m_ro_stream_files;
         const stream_header_t** m_ro_streams;
         const stream_header_t** m_ro_streams_sorted;  // For quick lookup by user_id
-        i32                     m_num_rw_streams;
-        i32                     m_max_rw_streams;
+        u32                     m_num_rw_streams;
+        u32                     m_max_rw_streams;
         char**                  m_rw_stream_filepaths;
         void**                  m_rw_stream_memory;
         nmmio::mappedfile_t**   m_rw_stream_files;
@@ -281,7 +281,7 @@ namespace ncore
     void stream_manager_flush(stream_manager_t* manager)
     {
         // Flush all read-write streams to disk
-        for (i32 i = 0; i < manager->m_num_rw_streams; i++)
+        for (u32 i = 0; i < manager->m_num_rw_streams; i++)
         {
             nmmio::mappedfile_t* rw_file = manager->m_rw_stream_files[i];
             if (rw_file != nullptr)
@@ -318,7 +318,7 @@ namespace ncore
         //  - Deallocate all memory used by the stream manager
 
         // Close all read-write streams
-        for (i32 i = 0; i < manager->m_num_rw_streams; i++)
+        for (u32 i = 0; i < manager->m_num_rw_streams; i++)
         {
             nmmio::mappedfile_t* rw_file = manager->m_rw_stream_files[i];
             if (rw_file != nullptr)
@@ -407,7 +407,7 @@ namespace ncore
             write_cursor     = stream_write_data(write_cursor, data, size);
             stream->m_write_cursor += (c_relative_time_byte_count + size);
             stream->m_item_count += 1;
-            stream->m_time_end = math::g_max(time, stream->m_time_end);
+            stream->m_time_end = math::max(time, stream->m_time_end);
             return true;
         }
         return false;  // Not enough space
@@ -425,7 +425,7 @@ namespace ncore
         write_cursor[0]               = value;
         stream->m_write_cursor += (c_relative_time_byte_count + sizeof(u8));
         stream->m_item_count += 1;
-        stream->m_time_end = math::g_max(time, stream->m_time_end);
+        stream->m_time_end = math::max(time, stream->m_time_end);
         return true;
     }
 
@@ -441,7 +441,7 @@ namespace ncore
         write_cursor                  = stream_write_u16_le(write_cursor, value);
         stream->m_write_cursor += (c_relative_time_byte_count + sizeof(u16));
         stream->m_item_count += 1;
-        stream->m_time_end = math::g_max(time, stream->m_time_end);
+        stream->m_time_end = math::max(time, stream->m_time_end);
         return true;
     }
 
@@ -457,7 +457,7 @@ namespace ncore
         write_cursor                  = stream_write_u32_le(write_cursor, value);
         stream->m_write_cursor += (c_relative_time_byte_count + sizeof(u32));
         stream->m_item_count += 1;
-        stream->m_time_end = math::g_max(time, stream->m_time_end);
+        stream->m_time_end = math::max(time, stream->m_time_end);
         return true;
     }
 
@@ -473,7 +473,7 @@ namespace ncore
         write_cursor                  = stream_write_f32_le(write_cursor, value);
         stream->m_write_cursor += (c_relative_time_byte_count + sizeof(f32));
         stream->m_item_count += 1;
-        stream->m_time_end = math::g_max(time, stream->m_time_end);
+        stream->m_time_end = math::max(time, stream->m_time_end);
         return true;
     }
 
@@ -622,7 +622,7 @@ namespace ncore
                             // left = ID, which is '001122334455' or '00:11:22:33:44:55' format
                             m->m_id = nrunes::parse_mac(left);
                             // right = filename, max 255-8 characters
-                            const u32 rlen = math::g_min((u32)(right.m_end - right.m_str), (u32)DARRAYSIZE(m->m_name) - 1);
+                            const u32 rlen = math::min((u32)(right.m_end - right.m_str), (u32)DARRAYSIZE(m->m_name) - 1);
                             nmem::memcpy(m->m_name, right.m_ascii + right.m_str, rlen);
                             m->m_name[rlen] = 0;
                         }

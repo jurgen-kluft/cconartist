@@ -1,11 +1,9 @@
-#include "cconartist/tcp_write_pool.h"
+#include "cconartist/uv_tcp_write_pool.h"
 #include "ccore/c_allocator.h"
-
-#include <string.h>
 
 namespace ncore
 {
-    struct tcp_write_pool_t
+    struct uv_tcp_write_pool_t
     {
         uv_write_t* m_pool;
         u16*        m_free_list;
@@ -16,9 +14,9 @@ namespace ncore
         DCORE_CLASS_PLACEMENT_NEW_DELETE;
     };
 
-    tcp_write_pool_t* write_pool_create(alloc_t* allocator, u16 capacity)
+    uv_tcp_write_pool_t* uv_tcp_write_pool_create(alloc_t* allocator, u16 capacity)
     {
-        tcp_write_pool_t* write_pool = g_construct<tcp_write_pool_t>(allocator);
+        uv_tcp_write_pool_t* write_pool = g_construct<uv_tcp_write_pool_t>(allocator);
 
         write_pool->m_pool       = g_allocate_array<uv_write_t>(allocator, capacity);
         write_pool->m_free_list  = g_allocate_array<u16>(allocator, capacity);
@@ -34,7 +32,7 @@ namespace ncore
         return write_pool;
     }
 
-    void write_pool_destroy(tcp_write_pool_t*& write_pool)
+    void uv_tcp_write_pool_destroy(uv_tcp_write_pool_t*& write_pool)
     {
         if (write_pool->m_pool != nullptr)
         {
@@ -51,7 +49,7 @@ namespace ncore
     }
 
     // Acquire a write request
-    uv_write_t* write_pool_acquire(tcp_write_pool_t* write_pool)
+    uv_write_t* uv_tcp_write_acquire(uv_tcp_write_pool_t* write_pool)
     {
         if (write_pool->m_free_count == 0)
             return NULL;
@@ -60,7 +58,7 @@ namespace ncore
     }
 
     // Release a write request
-    void write_pool_release(tcp_write_pool_t* write_pool, uv_write_t* req)
+    void uv_tcp_write_release(uv_tcp_write_pool_t* write_pool, uv_write_t* req)
     {
         u16 index = (u16)(req - write_pool->m_pool);
         if (index >= 0 && index < write_pool->m_capacity)
