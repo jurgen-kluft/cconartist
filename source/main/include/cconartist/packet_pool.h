@@ -22,9 +22,9 @@ namespace ncore
         u8        *m_data;
     };
 
-    packet_pool_t *packet_pool_create(alloc_t *allocator, u32 initial_pool_size, u32 max_pool_size);
+    packet_pool_t *packet_pool_create(alloc_t *allocator, u32 initial_pool_size, u32 max_pool_size, u16 packet_data_size);
     void           packet_pool_destroy(packet_pool_t *&pool);
-    packet_t      *packet_acquire(packet_pool_t *pool, u32 packet_size);
+    packet_t      *packet_acquire(packet_pool_t *pool);
     void           packet_release(packet_pool_t *pool, packet_t *pkt);
 }  // namespace ncore
 
