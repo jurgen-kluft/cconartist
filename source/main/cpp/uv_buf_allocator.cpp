@@ -15,24 +15,32 @@ namespace ncore
 
     uv_buf_alloc_t* uv_buf_alloc_create(alloc_t* allocator, u32 initial_capacity, u32 max_capacity)
     {
-        // todo
-        return nullptr;
+        uv_buf_alloc_t* alloc  = g_allocate<uv_buf_alloc_t>(allocator);
+        alloc->m_allocator     = allocator;
+        alloc->m_buf_allocator = g_create_heap(initial_capacity, max_capacity);
+        return alloc;
     }
 
     void uv_buf_alloc_destroy(uv_buf_alloc_t*& alloc)
     {
-        // todo
+        if (alloc)
+        {
+            g_release_heap(alloc->m_buf_allocator);
+            alloc->m_allocator->deallocate(alloc);
+            alloc = nullptr;
+        }
     }
 
     byte* uv_buf_alloc(uv_buf_alloc_t* alloc, u32 buf_size)
     {
-        // todo
-        return nullptr;
+        void* buf = alloc->m_buf_allocator->allocate(buf_size);
+        return (byte*)buf;
     }
 
     void uv_buf_release(uv_buf_alloc_t* alloc, byte* buf_data)
     {
-        // todo
+        // deallocate the buffer
+        alloc->m_buf_allocator->deallocate(buf_data);
     }
 
 }  // namespace ncore
