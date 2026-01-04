@@ -58,7 +58,7 @@ namespace ncore
             uv_udp_t  *m_udp_server;
             u16        m_discovery_port;
             uv_buf_t   m_response_buffer;
-            char      *m_response_data;
+            byte      *m_response_data;
         };
 
         struct servers_t
@@ -67,10 +67,10 @@ namespace ncore
             server_discovery_t  *m_discovery_server;
             i32                  m_tcp_server_count;
             i32                  m_tcp_server_capacity;
-            server_tcp_t        *m_tcp_servers;
+            server_tcp_t       **m_tcp_servers;
             i32                  m_udp_server_count;
             i32                  m_udp_server_capacity;
-            server_udp_t        *m_udp_servers;
+            server_udp_t       **m_udp_servers;
             tcp_con_mgr_t       *m_conn_mgr;
             uv_buf_alloc_t      *m_buf_allocator;
             uv_udp_t             m_udp_send_handle;  // UDP handle for sending packets
@@ -79,7 +79,14 @@ namespace ncore
             uv_tcp_write_pool_t *m_tcp_write_pool;
         };
 
-        servers_t *create_servers(alloc_t *allocator, uv_loop_t *loop, int max_tcp_servers, int max_udp_servers, int max_connections)
+        server_tcp_t       *create_tcp_server(alloc_t *allocator, servers_t *con_servers, config_tcp_server_t *config);
+        server_udp_t       *create_udp_server(alloc_t *allocator, servers_t *con_servers, config_udp_server_t *config);
+        server_discovery_t *create_udp_discovery_server(alloc_t *allocator, servers_t *con_servers, u16 discovery_port);
+        void                start_tcp_server(server_tcp_t *server);
+        void                start_udp_server(server_udp_t *server);
+        void                start_udp_discovery_server(server_discovery_t *server);
+
+        servers_t *create_servers(alloc_t *allocator, uv_loop_t *loop, ncore::config_main_t *config, int max_connections)
         {
             ncore::nconartist::servers_t *servers = g_allocate_and_clear<servers_t>(allocator);
             servers->m_loop                       = loop;  // Event loop
@@ -89,18 +96,188 @@ namespace ncore
             servers->m_tcp_write_pool             = uv_tcp_write_pool_create(allocator, max_connections);
             servers->m_tcp_pool                   = uv_tcp_pool_create(allocator, max_connections);
 
-            servers->m_tcp_server_capacity = max_tcp_servers;
-            servers->m_tcp_servers         = g_allocate_array_and_clear<server_tcp_t>(allocator, max_tcp_servers);
+            servers->m_tcp_server_capacity = config->m_num_tcp_servers;
+            servers->m_tcp_servers         = g_allocate_array_and_clear<server_tcp_t *>(allocator, config->m_num_tcp_servers);
             servers->m_tcp_server_count    = 0;
 
-            servers->m_udp_server_capacity = max_udp_servers;
-            servers->m_udp_servers         = g_allocate_array_and_clear<server_udp_t>(allocator, max_udp_servers);
+            servers->m_udp_server_capacity = config->m_num_udp_servers;
+            servers->m_udp_servers         = g_allocate_array_and_clear<server_udp_t *>(allocator, config->m_num_udp_servers);
             servers->m_udp_server_count    = 0;
 
             // Initialize UDP send handle, this can be used to send UDP packets to any address
             uv_udp_init(loop, &servers->m_udp_send_handle);
 
+            for (int i = 0; i < config->m_num_tcp_servers; i++)
+            {
+                ncore::nconartist::server_tcp_t *server = create_tcp_server(allocator, servers, &config->m_tcp_servers[i]);
+                if (server == nullptr)
+                {
+                    printf("Failed to create TCP server for %s\n", config->m_tcp_servers[i].m_server_name);
+                }
+                else
+                {
+                    servers->m_tcp_servers[i] = server;
+                    servers->m_tcp_server_count++;
+                }
+            }
+            for (int i = 0; i < config->m_num_udp_servers; i++)
+            {
+                ncore::nconartist::server_udp_t *server = create_udp_server(allocator, servers, &config->m_udp_servers[i]);
+                if (server == nullptr)
+                {
+                    printf("Failed to create UDP server for %s\n", config->m_udp_servers[i].m_server_name);
+                }
+                else
+                {
+                    servers->m_udp_servers[i] = server;
+                    servers->m_udp_server_count++;
+                }
+            }
+
+            // Initialize and start UDP discovery server
+            servers->m_discovery_server = ncore::nconartist::create_udp_discovery_server(allocator, servers, config->m_discovery_port);
+            if (servers->m_discovery_server == nullptr)
+            {
+                printf("Failed to create UDP discovery server on port %d\n", config->m_discovery_port);
+            }
             return servers;
+        }
+
+        void start_servers(alloc_t *allocator, servers_t *servers)
+        {
+            printf("Starting servers...\n");
+            for (int i = 0; i < servers->m_tcp_server_count; i++)
+            {
+                ncore::nconartist::server_tcp_t *server = servers->m_tcp_servers[i];
+                if (server == nullptr)
+                    continue;
+                printf("Starting TCP server on port %d\n", server->m_config->m_port);
+                start_tcp_server(server);
+            }
+            for (int i = 0; i < servers->m_udp_server_count; i++)
+            {
+                server_udp_t *server = servers->m_udp_servers[i];
+                if (server == nullptr)
+                    continue;
+                printf("Starting UDP server on port %d\n", server->m_config->m_port);
+                start_udp_server(server);
+            }
+
+            // Initialize and start UDP discovery server
+            server_discovery_t *discovery_server = servers->m_discovery_server;
+            printf("Starting UDP discovery server on port %d\n", discovery_server->m_discovery_port);
+            start_udp_discovery_server(discovery_server);
+        }
+
+        server_tcp_t *create_tcp_server(alloc_t *allocator, servers_t *con_servers, config_tcp_server_t *config)
+        {
+            server_tcp_t *server = g_allocate_and_clear<server_tcp_t>(allocator);
+            server->m_owner      = con_servers;
+            server->m_config     = config;
+            server->m_uv_tcp     = nullptr;
+            server->m_uv_tcp     = g_allocate_and_clear<uv_tcp_t>(allocator);
+
+            // create the nmmio mmmq stream for this server
+            nmmmq::config_t mmq_config(config->m_stream_config.m_index_size * cMB, config->m_stream_config.m_data_size * cMB, config->m_stream_config.m_max_consumers);
+            server->m_stream = nmmmq::create_handle(allocator);
+            const i32 result = nmmmq::init_producer(server->m_stream, mmq_config, config->m_stream_config.m_index_filename, config->m_stream_config.m_data_filename, config->m_stream_config.m_control_filename, config->m_stream_config.m_new_sem_name,
+                                                    config->m_stream_config.m_reg_sem_name);
+            if (result < 0)
+            {
+                nmmmq::destroy_handle(server->m_stream);
+                return nullptr;
+            }
+
+            return server;
+        }
+
+        void destroy_tcp_server(alloc_t *allocator, server_tcp_t *server)
+        {
+            nmmmq::close_handle(server->m_stream);
+            nmmmq::destroy_handle(server->m_stream);
+            allocator->deallocate(server->m_uv_tcp);
+        }
+
+        server_udp_t *create_udp_server(alloc_t *allocator, servers_t *con_servers, config_udp_server_t *config)
+        {
+            server_udp_t *server = g_allocate_and_clear<server_udp_t>(allocator);
+            server->m_owner      = con_servers;
+            server->m_config     = config;
+            server->m_uv_udp     = g_allocate_and_clear<uv_udp_t>(allocator);
+
+            // create the nmmio mmmq stream for this server
+            nmmmq::config_t mmq_config(config->m_stream_config.m_index_size * cMB, config->m_stream_config.m_data_size * cMB, config->m_stream_config.m_max_consumers);
+            server->m_stream = nmmmq::create_handle(allocator);
+            const i32 result = nmmmq::init_producer(server->m_stream, mmq_config, config->m_stream_config.m_index_filename, config->m_stream_config.m_data_filename, config->m_stream_config.m_control_filename, config->m_stream_config.m_new_sem_name,
+                                                    config->m_stream_config.m_reg_sem_name);
+            if (result < 0)
+            {
+                nmmmq::destroy_handle(server->m_stream);
+                return nullptr;
+            }
+
+            return server;
+        }
+
+        void destroy_udp_server(alloc_t *allocator, server_udp_t *server)
+        {
+            nmmmq::close_handle(server->m_stream);
+            nmmmq::destroy_handle(server->m_stream);
+            allocator->deallocate(server->m_uv_udp);
+        }
+
+        server_discovery_t *create_udp_discovery_server(alloc_t *allocator, servers_t *con_servers, u16 discovery_port)
+        {
+            server_discovery_t *server = g_allocate_and_clear<server_discovery_t>(allocator);
+            server->m_owner            = con_servers;
+            server->m_discovery_port   = discovery_port;
+            server->m_udp_server       = g_allocate_and_clear<uv_udp_t>(allocator);
+            server->m_response_buffer  = {nullptr, 0};
+            server->m_response_data    = nullptr;
+
+            // prepare the response data buffer
+            // For simplicity, we just respond with a fixed message that
+            // includes our IP, TCP and UDP ports
+            const char *response_template = "CONARTIST-IP=%s;SENSOR-TCP=%u;SENSOR-UDP=%u;IMAGE-TCP=%u";
+
+            // get our LAN ip-address from libuv
+            char                    ip_buffer[17] = {0};
+            uv_interface_address_t *addresses     = nullptr;
+            int                     count         = 0;
+            if (uv_interface_addresses(&addresses, &count) == 0)
+            {
+                for (int i = 0; i < count; ++i)
+                {
+                    uv_interface_address_t &address = addresses[i];
+                    if (!address.is_internal && address.address.address4.sin_family == AF_INET)
+                    {
+                        uv_ip4_name(&address.address.address4, ip_buffer, sizeof(ip_buffer));
+                        break;
+                    }
+                }
+                uv_free_interface_addresses(addresses, count);
+            }
+
+            // format the response data
+            config_tcp_server_t *sensor_tcp = con_servers->m_tcp_server_count > 0 ? con_servers->m_tcp_servers[0]->m_config : nullptr;
+            config_tcp_server_t *image_tcp  = con_servers->m_tcp_server_count > 1 ? con_servers->m_tcp_servers[1]->m_config : nullptr;
+            config_udp_server_t *udp_server = con_servers->m_udp_server_count > 0 ? con_servers->m_udp_servers[0]->m_config : nullptr;
+
+            int response_size       = snprintf(nullptr, 0, response_template, ip_buffer, sensor_tcp ? sensor_tcp->m_port : 0, image_tcp ? image_tcp->m_port : 0, udp_server ? udp_server->m_port : 0);
+            server->m_response_data = g_allocate_array_and_clear<byte>(allocator, response_size + 1);
+            snprintf((char *)server->m_response_data, response_size + 1, response_template, ip_buffer, sensor_tcp ? sensor_tcp->m_port : 0, image_tcp ? image_tcp->m_port : 0, udp_server ? udp_server->m_port : 0);
+            server->m_response_buffer.base = (char *)server->m_response_data;
+            server->m_response_buffer.len  = (size_t)response_size;
+            return server;
+        }
+
+        void destroy_udp_discovery_server(alloc_t *allocator, server_discovery_t *server)
+        {
+            if (server->m_response_data)
+            {
+                allocator->deallocate(server->m_response_data);
+            }
+            allocator->deallocate(server);
         }
 
         void destroy_servers(alloc_t *allocator, servers_t *servers)
@@ -111,65 +288,22 @@ namespace ncore
             uv_udp_send_pool_destroy(servers->m_udp_send_pool);
             uv_tcp_write_pool_destroy(servers->m_tcp_write_pool);
 
+            for (i32 i = 0; i < servers->m_tcp_server_count; ++i)
+            {
+                destroy_tcp_server(allocator, servers->m_tcp_servers[i]);
+            }
+            for (i32 i = 0; i < servers->m_udp_server_count; ++i)
+            {
+                destroy_udp_server(allocator, servers->m_udp_servers[i]);
+            }
+            if (servers->m_discovery_server)
+            {
+                destroy_udp_discovery_server(allocator, servers->m_discovery_server);
+            }
+
             allocator->deallocate(servers->m_tcp_servers);
             allocator->deallocate(servers->m_udp_servers);
             allocator->deallocate(servers);
-        }
-
-        server_tcp_t *create_tcp_server(alloc_t *allocator, servers_t *con_servers, config_tcp_server_t *config)
-        {
-            server_tcp_t *server = &con_servers->m_tcp_servers[con_servers->m_tcp_server_count];
-            server->m_owner      = con_servers;
-            server->m_config     = config;
-            server->m_uv_tcp     = nullptr;
-
-            // create the nmmio mmmq stream for this server
-            nmmmq::config_t mmq_config(config->m_stream_config.m_index_size * cMB, config->m_stream_config.m_data_size * cMB, config->m_stream_config.m_max_consumers);
-            server->m_stream = nmmmq::create_handle(allocator);
-            const i32 result = nmmmq::init_producer(server->m_stream, mmq_config, config->m_stream_config.m_index_filename, config->m_stream_config.m_data_filename, config->m_stream_config.m_control_filename, config->m_stream_config.m_new_sem_name,
-                                                    config->m_stream_config.m_reg_sem_name);
-            if (result < 0)
-            {
-                nmmmq::destroy_handle(server->m_stream);
-                return nullptr;
-            }
-
-            con_servers->m_tcp_server_count++;
-            return server;
-        }
-
-        server_udp_t *create_udp_server(alloc_t *allocator, servers_t *con_servers, config_udp_server_t *config)
-        {
-            server_udp_t *server = &con_servers->m_udp_servers[con_servers->m_udp_server_count];
-            server->m_owner      = con_servers;
-            server->m_config     = config;
-            server->m_uv_udp     = nullptr;
-
-            // create the nmmio mmmq stream for this server
-            nmmmq::config_t mmq_config(config->m_stream_config.m_index_size * cMB, config->m_stream_config.m_data_size * cMB, config->m_stream_config.m_max_consumers);
-            server->m_stream = nmmmq::create_handle(allocator);
-            const i32 result = nmmmq::init_producer(server->m_stream, mmq_config, config->m_stream_config.m_index_filename, config->m_stream_config.m_data_filename, config->m_stream_config.m_control_filename, config->m_stream_config.m_new_sem_name,
-                                                    config->m_stream_config.m_reg_sem_name);
-
-            if (result < 0)
-            {
-                nmmmq::destroy_handle(server->m_stream);
-                return nullptr;
-            }
-
-            con_servers->m_udp_server_count++;
-            return server;
-        }
-
-        server_discovery_t *create_udp_discovery_server(servers_t *con_servers, u16 discovery_port)
-        {
-            server_discovery_t *server = con_servers->m_discovery_server;
-            server->m_owner            = con_servers;
-            server->m_discovery_port   = discovery_port;
-            server->m_udp_server       = nullptr;
-            server->m_response_buffer  = {nullptr, 0};
-            server->m_response_data    = nullptr;
-            return server;
         }
 
         static void handle_uv_result(int result, const char *message)
@@ -186,7 +320,6 @@ namespace ncore
         {
             const char *error_msg = "TCP server start error: %s\n";
             servers_t  *servers   = server->m_owner;
-            server->m_uv_tcp      = (uv_tcp_t *)malloc(sizeof(uv_tcp_t));
             handle_uv_result(uv_tcp_init(servers->m_loop, server->m_uv_tcp), error_msg);
             struct sockaddr_in addr;
             handle_uv_result(uv_ip4_addr("0.0.0.0", server->m_config->m_port, &addr), error_msg);  // Bind to all interfaces
@@ -202,14 +335,12 @@ namespace ncore
         {
             const char *error_msg = "UDP server start error: %s\n";
             servers_t  *servers   = server->m_owner;
-            uv_udp_t   *udp       = (uv_udp_t *)malloc(sizeof(uv_udp_t));
-            server->m_uv_udp      = udp;
-            handle_uv_result(uv_udp_init(servers->m_loop, udp), error_msg);
+            handle_uv_result(uv_udp_init(servers->m_loop, server->m_uv_udp), error_msg);
             struct sockaddr_in addr;
             handle_uv_result(uv_ip4_addr("0.0.0.0", server->m_config->m_port, &addr), error_msg);
-            handle_uv_result(uv_udp_bind(udp, (const struct sockaddr *)&addr, UV_UDP_REUSEADDR), error_msg);
-            udp->data = server;
-            handle_uv_result(uv_udp_recv_start(udp, alloc_before_udp_recv, on_udp_recv), error_msg);
+            handle_uv_result(uv_udp_bind(server->m_uv_udp, (const struct sockaddr *)&addr, UV_UDP_REUSEADDR), error_msg);
+            server->m_uv_udp->data = server;
+            handle_uv_result(uv_udp_recv_start(server->m_uv_udp, alloc_before_udp_recv, on_udp_recv), error_msg);
         }
 
         void on_udp_discovery_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf, const struct sockaddr *addr, unsigned flags);
@@ -219,14 +350,12 @@ namespace ncore
         {
             const char *error_msg = "UDP discovery server start error: %s\n";
             servers_t  *servers   = server->m_owner;
-            uv_udp_t   *udp       = (uv_udp_t *)malloc(sizeof(uv_udp_t));
-            server->m_udp_server  = udp;
-            handle_uv_result(uv_udp_init(servers->m_loop, udp), error_msg);
+            handle_uv_result(uv_udp_init(servers->m_loop, server->m_udp_server), error_msg);
             struct sockaddr_in addr;
             handle_uv_result(uv_ip4_addr("0.0.0.0", server->m_discovery_port, &addr), error_msg);
-            handle_uv_result(uv_udp_bind(udp, (const struct sockaddr *)&addr, UV_UDP_REUSEADDR), error_msg);
-            udp->data = server;
-            handle_uv_result(uv_udp_recv_start(udp, alloc_before_udp_discovery_recv, on_udp_discovery_recv), error_msg);
+            handle_uv_result(uv_udp_bind(server->m_udp_server, (const struct sockaddr *)&addr, UV_UDP_REUSEADDR), error_msg);
+            server->m_udp_server->data = server;
+            handle_uv_result(uv_udp_recv_start(server->m_udp_server, alloc_before_udp_discovery_recv, on_udp_discovery_recv), error_msg);
         }
 
         void after_write(uv_write_t *req, int status)
@@ -368,14 +497,10 @@ namespace ncore
 
                 // Prepare response packet
                 // For simplicity, we assume the response is already prepared in server->m_response_data
-                uv_buf_t response_buf;
-                response_buf.base = server->m_response_data;
-                response_buf.len  = strlen(server->m_response_data);
-
                 uv_udp_send_t *send_req = uv_udp_send_acquire(con_servers->m_udp_send_pool);
                 send_req->handle        = handle;
                 send_req->data          = con_servers->m_udp_send_pool;  // For release callback
-                uv_udp_send(send_req, &con_servers->m_udp_send_handle, &response_buf, 1, addr, on_udp_discovery_send_done);
+                uv_udp_send(send_req, &con_servers->m_udp_send_handle, &server->m_response_buffer, 1, addr, on_udp_discovery_send_done);
             }
 
             if (buf->base)
@@ -410,14 +535,14 @@ public:
     virtual void *v_allocate(u32 size, u32 align) override final { return malloc(size); }
     virtual void  v_deallocate(void *ptr) override final { free(ptr); }
 };
+malloc_based_allocator g_mba;
 
 // --------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------
 
 int main()
 {
-    malloc_based_allocator mba;
-    alloc_t               *allocator = &mba;
+    alloc_t *allocator = &g_mba;
 
     ncore::config_main_t *config = ncore::g_load_config(allocator);
     if (!config)
@@ -430,52 +555,16 @@ int main()
     uv_loop_t *loop = uv_default_loop();
 
     // Create 'servers' context
-    ncore::nconartist::servers_t *servers = ncore::nconartist::create_servers(allocator, loop, config->m_num_tcp_servers, config->m_num_udp_servers, INITIAL_CONN_CAPACITY);
-
-    printf("Starting servers...\n");
-    for (int i = 0; i < config->m_num_tcp_servers; i++)
+    ncore::nconartist::servers_t *servers = ncore::nconartist::create_servers(allocator, loop, config, INITIAL_CONN_CAPACITY);
+    ncore::nconartist::start_servers(allocator, servers);
     {
-        ncore::nconartist::server_tcp_t *server = ncore::nconartist::create_tcp_server(allocator, servers, &config->m_tcp_servers[i]);
-        if (server == nullptr)
-        {
-            printf("Failed to create TCP server for %s\n", config->m_tcp_servers[i].m_server_name);
-            return -1;
-        }
-        printf("Starting TCP server on port %d\n", server->m_config->m_port);
-        ncore::nconartist::start_tcp_server(server);
+        // TODO: Have a function poll a (shared) memory mapped file for messages to send to TCP and UDP clients
+        // TODO: Use ctui to create a simple terminal UI for monitoring connections showing basic info and stats
+        uv_run(loop, UV_RUN_DEFAULT);
     }
-    for (int i = 0; i < config->m_num_udp_servers; i++)
-    {
-        ncore::nconartist::server_udp_t *server = ncore::nconartist::create_udp_server(allocator, servers, &config->m_udp_servers[i]);
-        if (server == nullptr)
-        {
-            printf("Failed to create UDP server for %s\n", config->m_udp_servers[i].m_server_name);
-            return -1;
-        }
-        printf("Starting UDP server on port %d\n", server->m_config->m_port);
-        ncore::nconartist::start_udp_server(server);
-    }
-
-    // Initialize and start UDP discovery server
-    ncore::nconartist::server_discovery_t *discovery_server = ncore::nconartist::create_udp_discovery_server(servers, config->m_discovery_port);
-    if (discovery_server == nullptr)
-    {
-        printf("Failed to create UDP discovery server on port %d\n", config->m_discovery_port);
-        return -1;
-    }
-    printf("Starting UDP discovery server on port %d\n", discovery_server->m_discovery_port);
-    ncore::nconartist::start_udp_discovery_server(discovery_server);
-
-    // TODO: Have a function poll a (shared) memory mapped file for messages to send to TCP and UDP clients
-
-    // TODO: Use ctui to create a simple terminal UI for monitoring connections showing basic info and stats
-
-    uv_run(loop, UV_RUN_DEFAULT);
-
     // Cleanup
     ncore::nconartist::destroy_servers(allocator, servers);
 
     uv_loop_close(loop);
-
     return 0;
 }

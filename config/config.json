@@ -2,22 +2,7 @@
     "discovery-port": 31337,
     "tcp-servers": [
         {
-            "name": "GeekOpen Server",
-            "port": 31330,
-            "stream": {
-                "name": "geek-open.mmstream",
-                "index-size": 24,
-                "data-size": 64,
-                "max-consumers": 8,
-                "index-filename": "geek-open.mmstream.index",
-                "data-filename": "geek-open.mmstream.data",
-                "control-filename": "geek-open.mmstream.control",
-                "new-sem-name": "geek-open.newsem",
-                "reg-sem-name": "geek-open.regsem"
-            }
-        },
-        {
-            "name": "Sensor Server",
+            "name": "Sensor-Server",
             "port": 31372,
             "stream":
             {
@@ -33,7 +18,7 @@
             }
         },
         {
-            "name": "Image Server",
+            "name": "Image-Server",
             "port": 31378,
             "stream":
             {
@@ -46,6 +31,21 @@
                 "control-filename": "image.mmstream.control",
                 "new-sem-name": "image.newsem",
                 "reg-sem-name": "image.regsem"
+            }
+        },
+        {
+            "name": "GeekOpen-Server",
+            "port": 31330,
+            "stream": {
+                "name": "geek-open.mmstream",
+                "index-size": 24,
+                "data-size": 64,
+                "max-consumers": 8,
+                "index-filename": "geek-open.mmstream.index",
+                "data-filename": "geek-open.mmstream.data",
+                "control-filename": "geek-open.mmstream.control",
+                "new-sem-name": "geek-open.newsem",
+                "reg-sem-name": "geek-open.regsem"
             }
         }
     ],
