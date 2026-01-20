@@ -11,7 +11,7 @@ namespace ncore
         u16*      m_free_list;
         i32       m_free_count;
         i32       m_capacity;
-        alloc_t*    m_allocator;
+        alloc_t*  m_allocator;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE;
     };

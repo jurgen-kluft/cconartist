@@ -10,14 +10,14 @@ namespace ncore
     struct uv_buf_alloc_t
     {
         alloc_t* m_allocator;
-        alloc_t* m_buf_allocator;
+        heap_t*  m_buf_allocator;
     };
 
     uv_buf_alloc_t* uv_buf_alloc_create(alloc_t* allocator, u32 initial_capacity, u32 max_capacity)
     {
         uv_buf_alloc_t* alloc  = g_allocate<uv_buf_alloc_t>(allocator);
         alloc->m_allocator     = allocator;
-        alloc->m_buf_allocator = g_create_heap(initial_capacity, max_capacity);
+        alloc->m_buf_allocator = g_heap_create(initial_capacity, max_capacity);
         return alloc;
     }
 
@@ -25,7 +25,7 @@ namespace ncore
     {
         if (alloc)
         {
-            g_release_heap(alloc->m_buf_allocator);
+            g_heap_release(alloc->m_buf_allocator);
             alloc->m_allocator->deallocate(alloc);
             alloc = nullptr;
         }
@@ -33,14 +33,14 @@ namespace ncore
 
     byte* uv_buf_alloc(uv_buf_alloc_t* alloc, u32 buf_size)
     {
-        void* buf = alloc->m_buf_allocator->allocate(buf_size);
+        void* buf = g_allocate_array<byte>(alloc->m_buf_allocator, buf_size);
         return (byte*)buf;
     }
 
     void uv_buf_release(uv_buf_alloc_t* alloc, byte* buf_data)
     {
         // deallocate the buffer
-        alloc->m_buf_allocator->deallocate(buf_data);
+        g_deallocate(alloc->m_buf_allocator, buf_data);
     }
 
 }  // namespace ncore

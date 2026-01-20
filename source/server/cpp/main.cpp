@@ -371,14 +371,6 @@ namespace ncore
             tcp_con_free(tcp_con->m_server->m_owner->m_conn_mgr, tcp_con);
         }
 
-        void on_tcp_write_done(uv_write_t *req, int status)
-        {
-            if (req->data)
-                free(req->data);
-            servers_t *con_servers = (servers_t *)req->handle->data;
-            uv_tcp_write_release(con_servers->m_tcp_write_pool, req);
-        }
-
         void alloc_before_tcp_read(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
         {
             tcp_con_t *tcp_con = (tcp_con_t *)handle->data;
