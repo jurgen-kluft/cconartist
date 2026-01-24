@@ -6,7 +6,6 @@ import (
 	"github.com/jurgen-kluft/ccode/denv"
 	cgui "github.com/jurgen-kluft/cgui/package"
 	cjson "github.com/jurgen-kluft/cjson/package"
-	clibuv "github.com/jurgen-kluft/clibuv/package"
 	cmmio "github.com/jurgen-kluft/cmmio/package"
 	cunittest "github.com/jurgen-kluft/cunittest/package"
 )
@@ -22,7 +21,6 @@ func GetPackage() *denv.Package {
 	// dependencies
 	callocator := callocator.GetPackage()
 	cbasepkg := cbase.GetPackage()
-	clibuvpkg := clibuv.GetPackage()
 	cmmiopkg := cmmio.GetPackage()
 	cguiapppkg := cgui.GetPackage()
 	cjsonpkg := cjson.GetPackage()
@@ -32,7 +30,6 @@ func GetPackage() *denv.Package {
 	mainpkg := denv.NewPackage(repo_path, repo_name)
 	mainpkg.AddPackage(callocator)
 	mainpkg.AddPackage(cbasepkg)
-	mainpkg.AddPackage(clibuvpkg)
 	mainpkg.AddPackage(cmmiopkg)
 	mainpkg.AddPackage(cguiapppkg)
 	mainpkg.AddPackage(cjsonpkg)
@@ -42,7 +39,6 @@ func GetPackage() *denv.Package {
 	mainlib := denv.SetupCppLibProject(mainpkg, name)
 	mainlib.AddDependencies(callocator.GetMainLib())
 	mainlib.AddDependencies(cbasepkg.GetMainLib())
-	mainlib.AddDependencies(clibuvpkg.GetMainLib())
 	mainlib.AddDependencies(cmmiopkg.GetMainLib())
 
 	// server application
@@ -63,7 +59,6 @@ func GetPackage() *denv.Package {
 	// test library
 	testlib := denv.SetupCppTestLibProject(mainpkg, name)
 	testlib.AddDependencies(cbasepkg.GetTestLib())
-	testlib.AddDependencies(clibuvpkg.GetTestLib())
 	testlib.AddDependencies(cmmiopkg.GetTestLib())
 	testlib.AddDependencies(cunittestpkg.GetTestLib())
 

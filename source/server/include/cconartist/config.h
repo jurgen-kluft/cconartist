@@ -27,33 +27,20 @@ namespace ncore
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
 
-    struct config_tcp_server_t
+    struct config_server_t
     {
         const char*     m_server_name;
         char const*     m_stream_name;
         config_stream_t m_stream_config;
-        u16             m_port;
-
-        DCORE_CLASS_PLACEMENT_NEW_DELETE
-    };
-
-    struct config_udp_server_t
-    {
-        const char*     m_server_name;
-        char const*     m_stream_name;
-        config_stream_t m_stream_config;
-        u16             m_port;
+        const char*     m_sock_path;  // Unix socket path
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
 
     struct config_main_t
     {
-        i32                  m_num_tcp_servers;
-        i32                  m_num_udp_servers;
-        config_tcp_server_t* m_tcp_servers;
-        config_udp_server_t* m_udp_servers;
-        u16                  m_discovery_port;
+        i32              m_num_servers;
+        config_server_t* m_servers;
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
