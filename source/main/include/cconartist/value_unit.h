@@ -3,7 +3,7 @@
 
 namespace nunit
 {
-    typedef unsigned char value_t;
+    typedef unsigned char type_t;
     enum enum_t
     {
         // Temperature (0–2)

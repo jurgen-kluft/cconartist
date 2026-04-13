@@ -10,8 +10,7 @@ This libary is shared between the server application and the GUI application. Th
 
 ## 2. Server
 
-The server is responsible for handling incoming TCP and UDP connections. It can run multiple servers simultaneously, and 
-it manages the connections and data streams. The server code is located in the `source/main/cpp/conman.cpp` file.
+The server is responsible for handling incoming TCP and UDP connections. It can run multiple servers simultaneously, and it manages the connections and data streams. The server code is located in the `source/main/cpp/conman.cpp` file.
 
 The server mainly outputs data streams to memory-mapped files on disk, which can then be read by a GUI or any other
 application.

@@ -51,8 +51,9 @@ namespace ncore
         i32          m_kind;
         i32          m_server_id;
         i32          m_listen_fd;
-        char*        m_path;
-        u32          m_path_len;
+        u32          m_ip;
+        u16          m_port;
+        u8           m_type;
         i32          m_active;
         u32          m_recv_buf_size;
         us_msg_cb    m_on_msg;
@@ -118,7 +119,6 @@ namespace ncore
     static void close_conn(us_loop* L, us_server* server, uint_t idx)
     {
         us_conn* connection = &server->m_conns[idx];
-        i32      cfd        = connection->m_fd;
         if (connection->m_fd >= 0)
         {
             kq_del_read(L->m_kq, connection->m_fd);
@@ -126,7 +126,7 @@ namespace ncore
         }
         if (server->m_on_disconnect)
         {
-            server->m_on_disconnect(server->m_server_id, cfd, server->m_user);
+            server->m_on_disconnect((client_id_t)connection, server->m_user);
         }
         if (connection->m_buf)
         {
@@ -247,7 +247,7 @@ namespace ncore
 
             // Full message read, now dispatch
             connection->m_used = US_MESSAGE_HEADER_SIZE + payload_len;
-            connection->m_server->m_on_msg(connection->m_server->m_server_id, connection->m_fd, (const void*)connection->m_buf, connection->m_used, connection->m_server->m_user);
+            connection->m_server->m_on_msg(connection->m_server->m_server_id, connection->m_fd, (const u8*)connection->m_buf, connection->m_used, connection->m_server->m_user);
             connection->m_used = 0;
         }
     }
@@ -293,17 +293,17 @@ namespace ncore
         return NULL;
     }
 
-    i32 us_server_create(us_loop* loop, const char* socket_path, uint_t path_len, uint_t recv_buf_size, us_msg_cb on_msg, us_client_cb on_connect, us_client_cb on_disconnect, void* user)
+    i32 us_server_create(us_loop* loop, u8 type, u32 ip, u16 port, uint_t recv_buf_size, us_msg_cb on_msg, us_client_cb on_connect, us_client_cb on_disconnect, void* user)
     {
-        if (!loop || !socket_path || path_len == 0 || !on_msg || recv_buf_size == 0)
+        if (!loop || !on_msg || recv_buf_size == 0)
         {
             errno = 22;  // EINVAL
             return -1;
         }
 
-        if (path_len >= sizeof(((sockaddr_un*)0)->sun_path))
+        if (type != 0 && type != 1)  // Only support UDP and TCP for now, where 0 = UDP, 1 = TCP
         {
-            errno = 63;  // ENAMETOOLONG
+            errno = 22;  // EINVAL
             return -1;
         }
 
@@ -313,7 +313,7 @@ namespace ncore
             return -1;
         }
 
-        i32 fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        i32 fd = socket(AF_INET, (type == 0) ? SOCK_DGRAM : SOCK_STREAM, 0);
         if (fd < 0)
             return -1;
         if (set_fd_nonblock(fd) < 0 || set_fd_cloexec(fd) < 0)
@@ -324,13 +324,11 @@ namespace ncore
             return -1;
         }
 
-        sockaddr_un addr;
+        sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
-        addr.sun_family = AF_UNIX;
-        memcpy(addr.sun_path, socket_path, path_len);
-        addr.sun_path[path_len] = '\0';
-
-        unlink(addr.sun_path);
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(ip);
+        addr.sin_port = htons(port);
 
         if (bind(fd, (sockaddr*)&addr, (socklen_t)sizeof(addr)) < 0)
         {
@@ -340,7 +338,7 @@ namespace ncore
             return -1;
         }
 
-        if (listen(fd, backlog > 0 ? backlog : 64) < 0)
+        if (listen(fd, SOMAXCONN) < 0)
         {
             i32 e = errno;
             close(fd);
@@ -363,23 +361,14 @@ namespace ncore
         server->m_conns_cap     = US_SERVER_CONN_CAP;
         server->m_active        = 1;
 
-        server->m_path = g_allocate_array<char>(loop->m_allocator, path_len + 1);
-        if (!server->m_path)
-        {
-            i32 e = errno;
-            close(fd);
-            errno = e;
-            return -1;
-        }
-        memcpy(server->m_path, socket_path, path_len);
-        server->m_path[path_len] = '\0';
-        server->m_path_len       = path_len;
+        server->m_ip   = ip;
+        server->m_port = port;
+        server->m_type = type;
 
         if (kq_add_read(loop->m_kq, fd, (void*)server) < 0)
         {
             i32 e = errno;
             close(fd);
-            g_deallocate_array(loop->m_allocator, server->m_path);
             memset(server, 0, sizeof(*server));
             loop->m_servers_count--;
             errno = e;
@@ -421,11 +410,9 @@ namespace ncore
             close(server->m_listen_fd);
         }
 
-        if (server->m_path && server->m_path_len > 0)
+        if (server->m_type == 0)  // UDP
         {
-            unlink(server->m_path);
-            g_deallocate_array(loop->m_allocator, server->m_path);
-            server->m_path = NULL;
+            // No additional cleanup needed for UDP
         }
 
         uint_t last = loop->m_servers_count - 1;
@@ -582,27 +569,46 @@ namespace ncore
         }
     }
 
-    i32 us_broadcast(struct us_loop* loop, i32 server_id, const void* data, uint_t len)
+    // This is a UDP broadcast, it sends the given data on the network.
+    // You need to figure out the UDP broadcast address for your network and pass it as the ip parameter.
+    // Example: if your machine's IP is 192.168.1.100 and your network mask is 255.255.255.0, the broadcast
+    //          address would be 192.168.1.255.
+    //          us_broadcast(loop, inet_addr("192.168.1.255"), port, data, len);
+    // port is the UDP port to send the broadcast to, e.g. 31337
+    i32 us_broadcast(struct us_loop* loop, u32 ip, u16 port, const void* data, uint_t len)
     {
         if (!loop || !data)
         {
             errno = 22;
             return -1;
         }
-        struct us_server* server = find_server_by_id(loop, server_id, NULL);
-        if (!server)
+
+        i32 fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0)
+            return -1;
+
+        if (set_fd_cloexec(fd) < 0)
         {
-            errno = 2;
+            i32 e = errno;
+            close(fd);
+            errno = e;
             return -1;
         }
-        i32 ok = 0;
-        for (uint_t i = 0; i < server->m_conns_count; ++i)
-        {
-            ssize_t n = us_client_send(server->m_conns[i].m_fd, data, len);
-            if (n >= 0)
-                ok = 1;
+
+        sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(ip);
+        addr.sin_port = htons(port);
+        ssize_t n = sendto(fd, data, len, 0, (sockaddr*)&addr, sizeof(addr));
+        i32     e = errno;
+        close(fd);
+        if (n < 0)        {
+            errno = e;
+            return -1;
         }
-        return ok ? 0 : -1;
+
+        return n >= 0 ? 0 : -1;
     }
 
     i32 us_client_close(us_loop* loop, i32 server_id, i32 client_fd)

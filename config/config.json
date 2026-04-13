@@ -2,50 +2,42 @@
     "servers": [
         {
             "name": "Sensor-Server",
-            "path": "/tmp/sensor.sock",
-            "stream":
-            {
-                "name": "sensor.mmstream",
-                "index-size": 48,
-                "data-size": 32,
-                "max-consumers": 8,
-                "index-filename": "sensor.mmstream.index",
-                "data-filename": "sensor.mmstream.data",
-                "control-filename": "sensor.mmstream.control",
-                "new-sem-name": "sensor.newsem",
-                "reg-sem-name": "sensor.regsem"
-            }
+            "type": "UDP",
+            "port": 31337
+        },
+        {
+            "name": "Sensor-Server",
+            "type": "TCP",
+            "port": 31338
         },
         {
             "name": "Image-Server",
-            "path": "/tmp/image.sock",
-            "stream":
-            {
-                "name": "image.mmstream",
-                "index-size": 1,
-                "data-size": 64,
-                "max-consumers": 8,
-                "index-filename": "image.mmstream.index",
-                "data-filename": "image.mmstream.data",
-                "control-filename": "image.mmstream.control",
-                "new-sem-name": "image.newsem",
-                "reg-sem-name": "image.regsem"
-            }
+            "type": "TCP",
+            "port": 31340
+        }
+    ],
+    "streams": [
+        {
+            "name": "sensor.mmstream",
+            "index-size": 48,
+            "data-size": 32,
+            "max-consumers": 8,
+            "index-filename": "sensor.mmstream.index",
+            "data-filename": "sensor.mmstream.data",
+            "control-filename": "sensor.mmstream.control",
+            "new-sem-name": "sensor.newsem",
+            "reg-sem-name": "sensor.regsem"
         },
         {
-            "name": "GeekOpen-Server",
-            "path": "/tmp/geekopen.sock",
-            "stream": {
-                "name": "geek-open.mmstream",
-                "index-size": 24,
-                "data-size": 64,
-                "max-consumers": 8,
-                "index-filename": "geek-open.mmstream.index",
-                "data-filename": "geek-open.mmstream.data",
-                "control-filename": "geek-open.mmstream.control",
-                "new-sem-name": "geek-open.newsem",
-                "reg-sem-name": "geek-open.regsem"
-            }
+            "name": "image.mmstream",
+            "index-size": 1,
+            "data-size": 64,
+            "max-consumers": 8,
+            "index-filename": "image.mmstream.index",
+            "data-filename": "image.mmstream.data",
+            "control-filename": "image.mmstream.control",
+            "new-sem-name": "image.newsem",
+            "reg-sem-name": "image.regsem"
         }
     ]
 }
